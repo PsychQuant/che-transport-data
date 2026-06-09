@@ -20,6 +20,8 @@ from marey import _kc, resolve_route_uids, TOKEN_URL, BASE, SSH_HOST, DATA_ROOT,
 OFF_ROUTE_M = 200      # drop GPS points farther than this from the route line (noise / off-route)
 SPLIT_BACK_M = 1500    # s going backward more than this -> new trip
 SPLIT_GAP_S = 1800     # time gap > this -> new trip
+MONO_BACK_M = 200      # --monotonic: allow s to retreat at most this (m)
+MONO_FWD_M = 2000      # --monotonic: look ahead at most this (m) from prev_s
 
 _A1_QUERY = """
 import duckdb, os, sys, csv
@@ -91,6 +93,50 @@ def project(px, py, m, c):
     return bs, math.sqrt(bd)
 
 
+def project_window(px, py, m, c, lo, hi):
+    """Nearest-point projection restricted to the arc-length window [lo, hi];
+    falls back to global if the window is empty. Used by --monotonic."""
+    bs, bd = None, 1e18
+    for i in range(len(m) - 1):
+        if c[i + 1] < lo or c[i] > hi:
+            continue
+        ax, ay = m[i]; bx, by = m[i + 1]; dx, dy = bx - ax, by - ay; L2 = dx * dx + dy * dy
+        t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+        cx, cy = ax + t * dx, ay + t * dy; dd = (px - cx) ** 2 + (py - cy) ** 2
+        if dd < bd:
+            bd = dd; bs = c[i] + t * math.sqrt(L2)
+    if bs is None:
+        return project(px, py, m, c)
+    return bs, math.sqrt(bd)
+
+
+def project_points(rows, to_m, polym, cum, monotonic):
+    """Project in-service GPS rows to (plate,dir) -> [(t, s)]. When monotonic,
+    project sequentially near the previous s (kills backward jumps where the
+    route geometry folds near itself); resets at trip gaps."""
+    raw = collections.defaultdict(list); n_off_service = 0
+    for r in rows:
+        if not (r["duty_status"] == "1" and r["bus_status"] == "0"):
+            n_off_service += 1; continue
+        d = int(float(r["direction"]))
+        if d not in polym:
+            continue
+        raw[(r["plate"], d)].append((float(r["t"]), float(r["gps_lon"]), float(r["gps_lat"])))
+    bv = collections.defaultdict(list); n_off_route = 0
+    for (plate, d), pts in raw.items():
+        pts.sort(); m, c = polym[d], cum[d]; prev_s = prev_t = None
+        for t, lon, lat in pts:
+            px, py = to_m(lon, lat)
+            if not monotonic or prev_s is None or (t - prev_t) > SPLIT_GAP_S:
+                s, perp = project(px, py, m, c)
+            else:
+                s, perp = project_window(px, py, m, c, prev_s - MONO_BACK_M, prev_s + MONO_FWD_M)
+            if perp > OFF_ROUTE_M:
+                n_off_route += 1; continue          # skip blip, keep prev_s
+            bv[(plate, d)].append((t, s)); prev_s, prev_t = s, t
+    return bv, n_off_service, n_off_route
+
+
 def split_and_score(bv, cum, min_cov, min_fwd):
     trips = collections.defaultdict(list)
     for (pl, d), pts in bv.items():
@@ -145,6 +191,7 @@ def main():
     ap.add_argument("--min-coverage", type=float, default=0.8, help="keep trips covering >= this fraction of route")
     ap.add_argument("--min-forward", type=float, default=0.8, help="keep trips with >= this fraction forward movement")
     ap.add_argument("--keep-anomalies", action="store_true", help="also draw dropped trips in grey")
+    ap.add_argument("--monotonic", action="store_true", help="sequential projection near previous s (fixes backward jumps where the route folds near itself)")
     a = ap.parse_args()
     uids = resolve_route_uids(a.city, a.route)
     if not uids:
@@ -153,17 +200,7 @@ def main():
     shape = fetch_shape(a.city, a.route)
     to_m, polym, cum = build_polylines(shape)
     rows = fetch_a1(uids, a.local)
-    bv = collections.defaultdict(list); n_off_service = n_off_route = 0
-    for r in rows:
-        if not (r["duty_status"] == "1" and r["bus_status"] == "0"):
-            n_off_service += 1; continue
-        d = int(float(r["direction"]))
-        if d not in polym:
-            continue
-        s, perp = project(*to_m(float(r["gps_lon"]), float(r["gps_lat"])), polym[d], cum[d])
-        if perp > OFF_ROUTE_M:
-            n_off_route += 1; continue
-        bv[(r["plate"], d)].append((float(r["t"]), s))
+    bv, n_off_service, n_off_route = project_points(rows, to_m, polym, cum, a.monotonic)
     clean, dropped = split_and_score(bv, cum, a.min_coverage, a.min_forward)
     print(f"points dropped: off-service {n_off_service}, off-route(>{OFF_ROUTE_M}m) {n_off_route}", file=sys.stderr)
     print(f"trips: {len(clean)} clean, {len(dropped)} dropped (cov<{a.min_coverage:.0%} or fwd<{a.min_forward:.0%})", file=sys.stderr)
