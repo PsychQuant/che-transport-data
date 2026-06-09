@@ -83,25 +83,41 @@ def split_trips(rows):
     return trips, sorted({k[0] for k in bykey})
 
 
-def plot(trips, plates, name, out):
+def plot(trips, plates, name, out, normalize=False):
     import matplotlib; matplotlib.use("Agg")
     import matplotlib.pyplot as plt, matplotlib.dates as mdates
+    import statistics
     pidx = {p: i for i, p in enumerate(plates)}; cmap = plt.cm.tab20
     dirs = sorted({k[1] for k in trips})
     fig, axes = plt.subplots(1, len(dirs), figsize=(9 * len(dirs), 8), sharey=True, squeeze=False)
     for ax, d in zip(axes[0], dirs):
-        nt = 0
+        nt = 0; prof = collections.defaultdict(list)  # stop_seq -> [elapsed_min] across trips
         for (plate, dd, trip), pts in trips.items():
             if dd != d:
                 continue
-            pts.sort(); xs = [datetime.datetime.fromtimestamp(t) for t, _ in pts]; ys = [s for _, s in pts]
-            ax.plot(xs, ys, "-", lw=1.1, alpha=0.85, color=cmap(pidx[plate] % 20)); nt += 1
+            pts = sorted(pts)
+            if normalize:
+                # origin = earliest time at the trip's smallest stop_sequence
+                min_s = min(s for _, s in pts); t0 = min(t for t, s in pts if s == min_s)
+                xs = [(t - t0) / 60.0 for t, _ in pts]; ys = [s for _, s in pts]
+                for x, y in zip(xs, ys):
+                    prof[y].append(x)
+            else:
+                xs = [datetime.datetime.fromtimestamp(t) for t, _ in pts]; ys = [s for _, s in pts]
+            ax.plot(xs, ys, "-", lw=1.0, alpha=0.45 if normalize else 0.85, color=cmap(pidx[plate] % 20)); nt += 1
+        if normalize and prof:
+            seqs = sorted(prof); med = [statistics.median(prof[s]) for s in seqs]
+            ax.plot(med, seqs, "k-", lw=2.6, alpha=0.9, label="median profile")
+            ax.legend(loc="lower right")
+            ax.set_xlabel("Minutes since departing origin")
+        else:
+            ax.set_xlabel("Time"); ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
         nb = len({k[0] for k in trips if k[1] == d})
         ax.set_title(f"Direction {d}  ({nt} trips, {nb} buses)")
-        ax.set_xlabel("Time"); ax.grid(True, alpha=0.3)
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+        ax.grid(True, alpha=0.3)
     axes[0][0].set_ylabel("Stop sequence (origin 1 -> terminal)")
-    fig.suptitle(f"Bus {name} - Marey diagram  |  line=one trip, slope=speed, vertical gap=headway", fontsize=13)
+    sub = "elapsed time from origin (trips overlaid + median)" if normalize else "wall-clock"
+    fig.suptitle(f"Bus {name} - Marey diagram, {sub}", fontsize=13)
     plt.tight_layout(); plt.savefig(out, dpi=110, bbox_inches="tight")
     print(f"saved {out}  ({len(trips)} trips, {len(plates)} buses)")
 
@@ -112,6 +128,7 @@ def main():
     ap.add_argument("--city", default="Taipei")
     ap.add_argument("--out", default=None)
     ap.add_argument("--local", default=None, help="local Parquet root (else query mini over ssh)")
+    ap.add_argument("--normalize", action="store_true", help="x-axis = minutes since departing origin (overlay all trips + median profile)")
     a = ap.parse_args()
     uids = resolve_route_uids(a.city, a.route)
     if not uids:
@@ -121,7 +138,8 @@ def main():
     if not rows:
         raise SystemExit("no arrival_event rows captured for this route yet")
     trips, plates = split_trips(rows)
-    plot(trips, plates, a.route, a.out or f"marey_{a.route}.png")
+    out = a.out or f"marey_{a.route}{'_norm' if a.normalize else ''}.png"
+    plot(trips, plates, a.route, out, normalize=a.normalize)
 
 
 if __name__ == "__main__":
