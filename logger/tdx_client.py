@@ -136,6 +136,7 @@ class TDXClient:
             "estimate_time_sec": rec.get("EstimateTime"),
             "stop_status": rec.get("StopStatus"),
             "plate": rec.get("PlateNumb"),
+            "src_update_time": _parse_gpstime(rec.get("SrcUpdateTime")),  # TDX 自己的更新時刻
             "captured_at": captured_at,
             "source": "N1",
         }

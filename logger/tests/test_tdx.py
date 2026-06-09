@@ -12,6 +12,7 @@ A2_SAMPLE = [{
 N1_SAMPLE = [{
     "StopUID": "TPE1", "RouteUID": "TPE11841", "Direction": 0,
     "EstimateTime": 240, "StopStatus": 0, "PlateNumb": "EAL-5200",
+    "SrcUpdateTime": "2026-06-04T13:59:50+08:00",
 }]
 
 A1_SAMPLE = [{
@@ -59,6 +60,7 @@ def test_fetch_n1_parses_eta_records():
     r = recs[0]
     assert r["stop_uid"] == "TPE1" and r["estimate_time_sec"] == 240
     assert r["stop_status"] == 0 and r["plate"] == "EAL-5200"
+    assert r["src_update_time"] == datetime.fromisoformat("2026-06-04T13:59:50+08:00")
     assert r["city"] == "Taipei" and r["source"] == "N1"
 
 def test_fetch_a1_parses_position_records():
