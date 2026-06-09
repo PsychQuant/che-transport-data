@@ -14,6 +14,13 @@ N1_SAMPLE = [{
     "EstimateTime": 240, "StopStatus": 0, "PlateNumb": "EAL-5200",
 }]
 
+A1_SAMPLE = [{
+    "PlateNumb": "EAL-5200", "RouteUID": "TPE11841", "SubRouteUID": "TPE118410",
+    "Direction": 0, "Speed": 23, "Azimuth": 90, "DutyStatus": 0, "BusStatus": 0,
+    "GPSTime": "2026-06-04T14:00:05+08:00",
+    "BusPosition": {"PositionLon": 121.55, "PositionLat": 25.06},
+}]
+
 def make_client(handler, **kw):
     http = httpx.Client(transport=httpx.MockTransport(handler))
     c = tdx.TDXClient(client_id="id", client_secret="sec", http=http, backoff_sec=0, **kw)
@@ -53,6 +60,21 @@ def test_fetch_n1_parses_eta_records():
     assert r["stop_uid"] == "TPE1" and r["estimate_time_sec"] == 240
     assert r["stop_status"] == 0 and r["plate"] == "EAL-5200"
     assert r["city"] == "Taipei" and r["source"] == "N1"
+
+def test_fetch_a1_parses_position_records():
+    def h(req):
+        if req.url.path.endswith("/token"):
+            return httpx.Response(200, json=TOKEN_JSON)
+        return httpx.Response(200, json=A1_SAMPLE)
+    c = make_client(h); c.get_token()
+    recs = c.fetch_bulk("Taipei", "A1")
+    assert len(recs) == 1
+    r = recs[0]
+    assert r["plate"] == "EAL-5200" and r["route_uid"] == "TPE11841"
+    assert r["gps_lat"] == 25.06 and r["gps_lon"] == 121.55
+    assert r["speed"] == 23 and r["azimuth"] == 90
+    assert r["gps_time"] == datetime.fromisoformat("2026-06-04T14:00:05+08:00")
+    assert r["city"] == "Taipei" and r["source"] == "A1"
 
 def test_429_single_retry_then_success():
     calls = {"n": 0}

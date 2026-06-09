@@ -24,7 +24,7 @@ TPE = timezone(timedelta(hours=8))
 @dataclass
 class Config:
     cities: list = field(default_factory=lambda: ["Taipei", "NewTaipei"])
-    intervals: dict = field(default_factory=lambda: {"A2": 30, "N1": 120})
+    intervals: dict = field(default_factory=lambda: {"A2": 30, "A1": 10, "N1": 120})
     volume_path: str = "/Volumes/CHANGE_ME"          # mount-check root (NVMe)
     data_root: str = "/Volumes/CHANGE_ME/che-transport/bus-eta/parquet"
     state_file: str = os.path.expanduser("~/.bus-eta-logger/heartbeat.txt")
@@ -56,6 +56,9 @@ def run_cycle(client, cadence, cfg, state, now):
                 events = dedup.dedup_arrival_events(recs)
                 n = storage.write_events(events, cfg.data_root, "arrival_event", mounted=True)
                 state["dedup_total"] += metrics.dedup_count(len(recs), len(events))
+            elif feed == "A1":
+                n = storage.write_events(recs, cfg.data_root, "vehicle_position",
+                                         mounted=True, ts_field="captured_at")
             else:
                 n = storage.write_events(recs, cfg.data_root, "eta_snapshot",
                                          mounted=True, ts_field="captured_at")

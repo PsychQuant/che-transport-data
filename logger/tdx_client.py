@@ -21,6 +21,7 @@ TPE = timezone(timedelta(hours=8))  # Asia/Taipei
 
 _FEED_PATH = {
     "A2": "/v2/Bus/RealTimeNearStop/City/{city}",
+    "A1": "/v2/Bus/RealTimeByFrequency/City/{city}",
     "N1": "/v2/Bus/EstimatedTimeOfArrival/City/{city}",
 }
 
@@ -107,6 +108,24 @@ class TDXClient:
                 "gps_lon": pos.get("PositionLon"),
                 "captured_at": captured_at,
                 "source": "A2",
+            }
+        if feed == "A1":
+            pos = rec.get("BusPosition") or {}
+            return {
+                "city": city,
+                "plate": rec.get("PlateNumb"),
+                "route_uid": rec.get("RouteUID"),
+                "sub_route_uid": rec.get("SubRouteUID"),
+                "direction": rec.get("Direction"),
+                "gps_lat": pos.get("PositionLat"),
+                "gps_lon": pos.get("PositionLon"),
+                "speed": rec.get("Speed"),
+                "azimuth": rec.get("Azimuth"),
+                "duty_status": rec.get("DutyStatus"),
+                "bus_status": rec.get("BusStatus"),
+                "gps_time": _parse_gpstime(rec.get("GPSTime")),
+                "captured_at": captured_at,
+                "source": "A1",
             }
         # N1
         return {
