@@ -8,6 +8,7 @@ mounted). run_cycle does ONE cycle (unit-tested); main() is the thin loop.
 import json
 import os
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -72,6 +73,18 @@ def _keychain(account):
     ).stdout.strip()
 
 
+def _load_creds() -> tuple:
+    """Load TDX creds: prefer a local 0600 JSON file (daemon-friendly — avoids
+    launchd keychain-access prompts); fall back to the keychain for interactive use."""
+    path = os.environ.get("BUS_ETA_TDX_CREDS_FILE",
+                          os.path.expanduser("~/.config/bus-eta-logger/tdx.json"))
+    if os.path.exists(path):
+        with open(path) as f:
+            d = json.load(f)
+        return d.get("client_id", ""), d.get("client_secret", "")
+    return _keychain("client_id"), _keychain("client_secret")
+
+
 def _read_heartbeat(path):
     try:
         return datetime.fromisoformat(open(path).read().strip())
@@ -85,7 +98,7 @@ def _write_heartbeat(path, now):
 
 
 def _record_gap(cfg, gap):
-    d = os.path.join(cfg.data_root, "..", "gaps")
+    d = os.path.normpath(os.path.join(cfg.data_root, "..", "gaps"))
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "gaps.jsonl"), "a") as f:
         f.write(json.dumps({k: (v.isoformat() if isinstance(v, datetime) else v)
@@ -97,16 +110,20 @@ def main():
         volume_path=os.environ.get("BUS_ETA_VOLUME", Config.volume_path),
         data_root=os.environ.get("BUS_ETA_DATA_ROOT", Config.data_root),
     )
-    client = TDXClient(_keychain("client_id"), _keychain("client_secret"))
+    cid, csec = _load_creds()
+    client = TDXClient(cid, csec)
     client.get_token()
     token_t = time.monotonic()
 
     # gap-on-restart: compare last heartbeat against now
     now = datetime.now(TPE)
     last = _read_heartbeat(cfg.state_file)
-    gap = metrics.detect_gap(last, now, min(cfg.intervals.values()))
-    if gap and storage.volume_is_mounted(cfg.volume_path):
-        _record_gap(cfg, gap)
+    try:
+        gap = metrics.detect_gap(last, now, min(cfg.intervals.values()))
+        if gap and storage.volume_is_mounted(cfg.volume_path):
+            _record_gap(cfg, gap)
+    except Exception as exc:  # gap marker is best-effort; must never crash capture
+        print(f"gap-record failed (non-fatal): {exc}", file=sys.stderr)
 
     cadence = Cadence(cfg.intervals)
     state = new_state()

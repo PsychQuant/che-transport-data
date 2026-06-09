@@ -55,3 +55,10 @@ def test_run_cycle_only_runs_due_feeds(tmp_path):
     c.calls.clear()
     poller.run_cycle(c, cad, cfg, state, now + timedelta(seconds=30))  # only A2 due
     assert {f for _, f in c.calls} == {"A2"}
+
+
+def test_load_creds_prefers_file(tmp_path, monkeypatch):
+    f = tmp_path / "tdx.json"
+    f.write_text('{"client_id": "CID", "client_secret": "SEC"}')
+    monkeypatch.setenv("BUS_ETA_TDX_CREDS_FILE", str(f))
+    assert poller._load_creds() == ("CID", "SEC")
