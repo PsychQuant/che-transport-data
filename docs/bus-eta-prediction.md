@@ -60,3 +60,6 @@ the same lead-time and covariate strata.
 - Covariates (no-leakage rule — must be known/forecastable at predict time): calendar
   + dwell are in `spine.sql`; GPS segment-speed / leading-bus (per-route) and a CWA
   weather collector are the next additions.
+- **Vehicle / driver effect**: `plate` is captured on every feed → free covariate.
+  Model as a categorical / random effect (some buses/drivers run systematically
+  faster/slower). Orthogonal to segment-speed (environment) — both belong in the model.
