@@ -108,14 +108,32 @@ def _record_gap(cfg, gap):
                             for k, v in gap.items()}) + "\n")
 
 
+def _try_token(client) -> bool:
+    """Acquire a token; never raise. A TDX-side credential outage (e.g. 400
+    unauthorized_client) must degrade to patient retry, not a crash loop —
+    launchd KeepAlive restarting a crashing daemon hammered the log 4600+
+    times during the 2026-06-10 outage."""
+    try:
+        client.get_token()
+        return True
+    except Exception as exc:
+        print(f"token acquisition failed (will retry): {exc}", file=sys.stderr)
+        return False
+
+
 def main():
     cfg = Config(
         volume_path=os.environ.get("BUS_ETA_VOLUME", Config.volume_path),
         data_root=os.environ.get("BUS_ETA_DATA_ROOT", Config.data_root),
     )
-    cid, csec = _load_creds()
-    client = TDXClient(cid, csec)
-    client.get_token()
+    # Re-read creds on every retry so rotating the creds file (e.g. after a
+    # TDX-side key reset) heals the daemon without a restart.
+    while True:
+        cid, csec = _load_creds()
+        client = TDXClient(cid, csec)
+        if _try_token(client):
+            break
+        time.sleep(60)
     token_t = time.monotonic()
 
     # gap-on-restart: compare last heartbeat against now
@@ -133,8 +151,14 @@ def main():
     while True:
         now = datetime.now(TPE)
         if time.monotonic() - token_t > cfg.token_refresh_sec:
-            client.get_token(); token_t = time.monotonic()
-        run_cycle(client, cadence, cfg, state, now)
+            if _try_token(client):
+                token_t = time.monotonic()
+            # on failure keep the old token; retry next tick — fetches may still
+            # work until expiry, and the daemon must outlive a TDX auth outage
+        try:
+            run_cycle(client, cadence, cfg, state, now)
+        except Exception as exc:  # e.g. 401 raise_for_status when token expired mid-outage
+            print(f"cycle failed (non-fatal): {exc}", file=sys.stderr)
         if storage.volume_is_mounted(cfg.volume_path):
             _write_heartbeat(cfg.state_file, now)
         time.sleep(cfg.tick_sec)

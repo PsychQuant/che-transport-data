@@ -62,3 +62,14 @@ def test_load_creds_prefers_file(tmp_path, monkeypatch):
     f.write_text('{"client_id": "CID", "client_secret": "SEC"}')
     monkeypatch.setenv("BUS_ETA_TDX_CREDS_FILE", str(f))
     assert poller._load_creds() == ("CID", "SEC")
+
+
+def test_try_token_never_raises():
+    class Boom:
+        def get_token(self):
+            raise RuntimeError("400 unauthorized_client")
+    class Ok:
+        def get_token(self):
+            return "tok"
+    assert poller._try_token(Boom()) is False
+    assert poller._try_token(Ok()) is True
