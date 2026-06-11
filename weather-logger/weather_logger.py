@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CWA weather logger — second persistent collector (mirrors bus-eta logger).
 
-v1: observations only (CWA O-A0003-001 自動氣象站), Taipei + New Taipei, written
+v1: observations only (CWA O-A0003-001 自動氣象站, all ~362 stations), written
 as Hive-partitioned Parquet to the NVMe. Aligned to bus data for ETA modeling
 (rain/temp covariate). Forecast (F-D0047, the no-leakage predict-time feature)
 is v2.
@@ -31,6 +31,20 @@ DATA_ROOT = os.environ.get("WEATHER_DATA_ROOT", "/Volumes/mini-2TB-SSD/che-trans
 
 
 def _load_key():
+    """Keychain first (item seeded via `che-keychain set --daemon` -> allow-all
+    ACL, so launchd reads it with no prompt), then 0600 file, then env. The
+    5s timeout guards against a mis-ACL'd item hanging the daemon on a
+    SecurityAgent prompt."""
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["security", "find-generic-password", "-s", "che-weather-cwa",
+             "-a", "api_key", "-w"],
+            capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except Exception:
+        pass
     path = os.environ.get("CWA_KEY_FILE", os.path.expanduser("~/.config/weather-logger/cwa.json"))
     if os.path.exists(path):
         return json.load(open(path)).get("api_key", "")
@@ -66,9 +80,7 @@ def parse_obs(j, captured_at):
     out = []
     for st in stations:
         geo = st.get("GeoInfo", {}) if isinstance(st, dict) else {}
-        county = geo.get("CountyName") or st.get("CountyName")
-        if county not in COUNTIES:
-            continue
+        county = geo.get("CountyName") or st.get("CountyName") or "unknown"
         lat = lon = None
         for c in (geo.get("Coordinates") or []):
             if c.get("CoordinateName") in ("WGS84", None):
@@ -132,15 +144,24 @@ def main():
     key = _load_key()
     if not key:
         sys.exit("no CWA key")
-    last = 0.0
+    last = None  # None -> first cycle fires immediately (monotonic starts ~0)
     while True:
         now = time.monotonic()
-        if now - last >= OBS_INTERVAL:
+        if last is None or now - last >= OBS_INTERVAL:
             if volume_mounted():
                 j = fetch_obs(key, retries=1)
                 if j:
                     try:
                         n = write_rows(parse_obs(j, datetime.now(TPE).isoformat()))
+                        if n == 0:  # diagnostic: why nothing kept?
+                            recs = j.get("records", {})
+                            st = recs.get("Station") or recs.get("location") or []
+                            import collections
+                            cs = collections.Counter(
+                                (x.get("GeoInfo", {}).get("CountyName") if isinstance(x.get("GeoInfo"), dict) else None)
+                                or x.get("CountyName") for x in st)
+                            print(f"obs 0-kept: {len(st)} stations; counties={dict(list(cs.items())[:8])}; "
+                                  f"first_keys={list(st[0].keys()) if st else []}", file=sys.stderr)
                     except Exception as exc:
                         print(f"write failed (non-fatal): {exc}", file=sys.stderr); n = 0
                 last = now
