@@ -63,3 +63,5 @@ the same lead-time and covariate strata.
 - **Vehicle / driver effect**: `plate` is captured on every feed → free covariate.
   Model as a categorical / random effect (some buses/drivers run systematically
   faster/slower). Orthogonal to segment-speed (environment) — both belong in the model.
+- Offline serving table (hard-coded P50/P80 wait tables; what CAN and cannot be
+  frozen offline, measured headway-dispersion evidence): `docs/offline-serving-table.md`
