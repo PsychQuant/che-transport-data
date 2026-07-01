@@ -1,0 +1,24 @@
+-- Incremental load entrypoint.
+--
+-- The operational SQL is logger/warehouse/10_bootstrap.sql. It is deliberately
+-- written as a partition-replace loader:
+--   1. read only the rendered date/city slice from Parquet
+--   2. DELETE the same native DuckDB fact partitions
+--   3. INSERT the current source rows
+--   4. refresh warehouse_partition_load
+--
+-- Run through the helper:
+--
+--   python logger/warehouse/run_warehouse_sql.py \
+--     --mode incremental \
+--     --db /Volumes/mini-2TB-SSD/che-transport/bus-eta/warehouse/bus_eta.duckdb \
+--     --parquet-root /Volumes/mini-2TB-SSD/che-transport/bus-eta/parquet \
+--     --load-date 2026-06-30
+--
+-- This file is documentation-only by design so there is a single load SQL body
+-- to audit. The runner renders 10_bootstrap.sql with:
+--   ${DATE_FILTER}        = CAST(date AS DATE) = DATE '<load-date>'
+--   ${FACT_DELETE_FILTER} = service_date = DATE '<load-date>' AND city IN (...)
+--
+-- The result is idempotent for a date partition: rerunning the same date
+-- replaces that date's native rows instead of appending duplicates.
