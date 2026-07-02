@@ -42,12 +42,12 @@ logger/.venv/bin/python -m pytest logger/tests -q     # 34+ tests
 ├── dim/                                                           # SCD Type-2 dimension（route/stop/vehicle/route-stop bridge；valid_from/valid_to/is_current）
 ├── gaps/                                                          # gap marker（logger 中斷的不可回補缺漏時段）
 ├── serving/                                                       # 預算表（Phase 2：P50/P80 → bus_eta_predict）
-└── warehouse/                                                     # bus_eta.duckdb（logger/warehouse/ 建置的持久化分析庫）
+└── warehouse/                                                     # warehouse.duckdb（logger/warehouse/ 建置的持久化分析庫；檔名勿用 bus_eta——會與 schema 名撞 catalog ambiguity）
 ```
 
 - **Volume 名 = `mini-2TB-SSD`**（Kingston NV3 2TB；已掛載於 `/Volumes/mini-2TB-SSD`，`diskutil` 報 PCI-Express、Removable: Fixed）。
 - **掛載守衛**：碟未掛載時 logger **拒絕寫入、不可 fallback 到系統碟（256G）**。
-- 查詢引擎 = DuckDB；分析 = SSH 進 mini-che 在地跑或 rsync Parquet／單檔 `bus_eta.duckdb` 回筆電（**勿隔 SMB 即時查**，延遲會咬）。
+- 查詢引擎 = DuckDB；分析 = SSH 進 mini-che 在地跑或 rsync Parquet／單檔 `warehouse.duckdb` 回筆電（**勿隔 SMB 即時查**，延遲會咬）。
 - **對齊分析**：`analysis/spine.sql` 定義 DuckDB views（a1/a2/n1/arrivals）+ ASOF marts：`trajectory(t0,t1,step_sec)`（車軌跡，A1 位置前向填）、`prediction_error`（每筆到站 vs N1 預測的誤差；N1 無 plate 故 join 在 route/dir/stop）。mini 無 duckdb CLI → 用 logger venv 的 python duckdb（已裝 `pytz` 供 timestamptz 輸出）：`con.execute(open('analysis/spine.sql').read())`。
 - **路線視覺化**：`analysis/marey.py <route>`（站序 Marey 時空圖，`--normalize` 出 run-time profile）、`analysis/spacetime.py <route>`（A1 GPS 投影到路線 Shape 的**真距離** distance-time，slope=真 km/h；含清洗：濾 `duty_status=1`&`bus_status=0`→投影丟 >200m 離線→切趟→覆蓋率≥80%&前進率≥80%，`--keep-anomalies` 灰線疊示被丟趟）、`analysis/features_gps.py <route>`（段速熱圖=內生壅塞圖 + 前車 headway covariate）。產生的 PNG 在 `analysis/output/`（gitignored）。
 - **採集 feeds（3 條，各自節奏）**：`A2`(30s)→`arrival_event`（到站真值，去重）／`A1`(10s)→`vehicle_position`（即時車輛 GPS 位置，全量不去重；A2/N1 都不帶座標，位置只在 A1）／`N1`(120s)→`eta_snapshot`（ETA 預測基準）。A1 取 10s 是對應實測 TDX GPS 更新率 ~15–20s（再細是重複、源頭沒那麼細）。
@@ -79,4 +79,4 @@ logger 已部署並運行於 mini-che。部署踩過三道 macOS 關卡，操作
 
 ## DuckDB Warehouse（`logger/warehouse/`）
 
-Parquet lake 為 canonical、`bus_eta.duckdb` 為可攜分析快照（thin fact 原生複製 + SCD2 dims + point-in-time resolved views）。主庫建在 mini（data gravity）、需要時 rsync 單檔回筆電。runner：`run_warehouse_sql.py`，modes = `compat`／`bootstrap`／`incremental`（date/city 分區整批替換、冪等）／`verify`／`scd2`。**尚未實跑驗證**——首跑順序 compat → 單日 bootstrap → verify。詳見 `logger/warehouse/README.md` 與 issue tracker。
+Parquet lake 為 canonical、`warehouse.duckdb` 為可攜分析快照（thin fact 原生複製 + SCD2 dims + point-in-time resolved views）。主庫建在 mini（data gravity）、需要時 rsync 單檔回筆電。runner：`run_warehouse_sql.py`，modes = `compat`／`bootstrap`／`incremental`（date/city 分區整批替換、冪等）／`verify`／`scd2`。**尚未實跑驗證**——首跑順序 compat → 單日 bootstrap → verify。詳見 `logger/warehouse/README.md` 與 issue tracker。

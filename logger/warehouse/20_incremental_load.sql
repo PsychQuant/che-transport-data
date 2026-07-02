@@ -11,7 +11,7 @@
 --
 --   python logger/warehouse/run_warehouse_sql.py \
 --     --mode incremental \
---     --db /Volumes/mini-2TB-SSD/che-transport/bus-eta/warehouse/bus_eta.duckdb \
+--     --db /Volumes/mini-2TB-SSD/che-transport/bus-eta/warehouse/warehouse.duckdb \
 --     --parquet-root /Volumes/mini-2TB-SSD/che-transport/bus-eta/parquet \
 --     --load-date 2026-06-30
 --

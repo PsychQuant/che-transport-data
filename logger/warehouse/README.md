@@ -6,7 +6,7 @@ lake on mini-che.
 Recommended location on mini:
 
 ```bash
-DB=/Volumes/mini-2TB-SSD/che-transport/bus-eta/warehouse/bus_eta.duckdb
+DB=/Volumes/mini-2TB-SSD/che-transport/bus-eta/warehouse/warehouse.duckdb
 PARQUET=/Volumes/mini-2TB-SSD/che-transport/bus-eta/parquet
 PY=/path/to/bus-eta-logger/.venv/bin/python
 ```
