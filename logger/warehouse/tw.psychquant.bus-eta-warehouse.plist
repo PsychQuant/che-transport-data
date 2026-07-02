@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>tw.psychquant.bus-eta-warehouse</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>/Users/che830621/che-transport-data/logger/warehouse/daily_incremental.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>BUS_ETA_VOLUME</key><string>/Volumes/mini-2TB-SSD</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>3</integer>
+    <key>Minute</key><integer>30</integer>
+  </dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>/Users/che830621/Library/Logs/bus-eta-warehouse.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/che830621/Library/Logs/bus-eta-warehouse.err.log</string>
+</dict>
+</plist>
