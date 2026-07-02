@@ -22,3 +22,9 @@ data/
 *.parquet
 *.duckdb
 *.duckdb.wal
+
+# credentials — repo is PUBLIC; these must never be tracked
+tdx.json
+*.credentials.json
+.env
+.env.*

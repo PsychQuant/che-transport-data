@@ -2,14 +2,13 @@
 
 台灣大眾運輸資料平台（採集 → Parquet → DuckDB → 分析）。2026-07 自 `PsychQuant/rush` 分拆（歷史完整保留）；MCP 工具面在 rush，本 repo 專責資料。
 
-## Repo 定位 — standalone by design（勿掛為 submodule）
+## Repo 定位 — PUBLIC，掛載為 rush 的 `repos/` submodule
 
-本 repo **刻意獨立**，不是、也不要變成任何 repo 的 submodule（2026-07-02 決策）：
+**現行決策（2026-07-02 晚，取代同日稍早的 standalone-only 定位）**：本 repo 轉 **public**，並以 submodule 掛在 `PsychQuant/rush` 的 `repos/che-transport-data`（比照 mac-benchmark ↔ macllm-roofline 的 repos/ pattern）。稍早反對 submodule 的兩個理由（public×private 弄壞外部 clone、`.gitmodules` 洩漏私有路徑）在轉 public 後即不成立，使用者裁定掛載。
 
-- **不掛 rush**：rush 是 PUBLIC 產品 repo、本 repo PRIVATE——公開 repo 掛私有 submodule 會讓外部 `--recurse-submodules` clone 失敗，且 `.gitmodules` 公開洩漏私有路徑；兩側零 code 依賴，掛了沒有功能。
-- **不掛 che-mcps**：那是 MCP 專用傘（rush 自己也不在裡面），資料平台性質不合。
-- **例外（未來）**：bus-ETA 預測論文成案時，由**該論文專案**（private）把本 repo 掛進它的 `repos/` 當 submodule pin 版本（同 mac-benchmark ↔ macllm-roofline 的 pattern）——那才有真實消費依賴與重現性需求。
-- mini 部署依賴「直接 clone + `git pull`」的單層更新，不要引入 superproject 間接層。
+- **公開的前提**（轉 public 前已全歷史機密掃描通過）：憑證永不進 git（TDX creds = mini 本機 0600 檔、CWA key = keychain）；資料檔（parquet/duckdb）不進 git。欄位級文件見 `CODEBOOK.md`。
+- 主要工作副本 = rush checkout 內的 `repos/che-transport-data`（submodule）；**mini 部署仍是獨立直接 clone**（`~/che-transport-data`，單層 `git pull`，不經 superproject）。
+- 不掛 che-mcps（MCP 專用傘，性質不合，維持原判）。
 
 ## Spectra
 

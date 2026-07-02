@@ -21,6 +21,8 @@ TDX 公車動態僅滾動保留 ~2h、無任何現成歷史來源（已查證）
 
 mini-che 外接 NVMe：`/Volumes/mini-2TB-SSD/che-transport/{bus-eta,weather}/`。詳見 `CLAUDE.md`（分層、掛載守衛、部署三關卡）。**資料不進 git**——CSV/SQL/程式碼進版本控制，Parquet/DuckDB 為外部產物。
 
+**欄位級資料字典：[`CODEBOOK.md`](CODEBOOK.md)**（parquet lake 三 feed + weather + warehouse 全表欄位語意、TDX 代碼映射、已知資料品質事項）。
+
 ## 快速開始（開發）
 
 ```bash
