@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>tw.psychquant.bus-eta-logger</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/che830621/che-transport-data/logger/.venv/bin/python</string>
+    <string>/Users/che830621/che-transport-data/logger/poller.py</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>BUS_ETA_VOLUME</key><string>/Volumes/mini-2TB-SSD</string>
+    <key>BUS_ETA_DATA_ROOT</key><string>/Volumes/mini-2TB-SSD/che-transport/bus-eta/parquet</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/che830621/Library/Logs/bus-eta-logger.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/che830621/Library/Logs/bus-eta-logger.err.log</string>
+</dict>
+</plist>

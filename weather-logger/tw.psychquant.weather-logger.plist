@@ -5,8 +5,8 @@
   <key>Label</key><string>tw.psychquant.weather-logger</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/che830621/bus-eta-logger/.venv/bin/python</string>
-    <string>/Users/che830621/weather-logger/weather_logger.py</string>
+    <string>/Users/che830621/che-transport-data/logger/.venv/bin/python</string>
+    <string>/Users/che830621/che-transport-data/weather-logger/weather_logger.py</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
