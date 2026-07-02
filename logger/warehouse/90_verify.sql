@@ -79,11 +79,11 @@ GROUP BY plate
 HAVING COUNT(*) > 1
 UNION ALL
 SELECT 'bridge_route_stop' AS table_name,
-       city || '|' || route_uid || '|' || CAST(direction AS VARCHAR) || '|' || CAST(stop_sequence AS VARCHAR) AS natural_key,
+       city || '|' || route_uid || '|' || CAST(direction AS VARCHAR) || '|' || CAST(stop_sequence AS VARCHAR) || '|' || stop_uid AS natural_key,
        COUNT(*)::UBIGINT AS current_rows
 FROM bus_eta.bridge_route_stop
 WHERE is_current
-GROUP BY city, route_uid, direction, stop_sequence
+GROUP BY city, route_uid, direction, stop_sequence, stop_uid
 HAVING COUNT(*) > 1;
 
 WITH count_check AS (

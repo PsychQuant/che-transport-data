@@ -67,6 +67,11 @@ CREATE TABLE IF NOT EXISTS bus_eta.dim_vehicle (
     UNIQUE (plate, valid_from)
 );
 
+-- Natural key includes stop_uid: TDX route_uid aggregates sub-routes (正線/區間車),
+-- stop_sequence is per sub-route, so (route_uid, direction, stop_sequence) does NOT
+-- determine stop_uid (real data 2026-07-01: 2,940/57,069 keys map to 2–6 stops).
+-- Raw A2 lacks SubRouteUID (logger doesn't capture it yet); if it is added upstream,
+-- the bridge can re-key on sub_route.
 CREATE TABLE IF NOT EXISTS bus_eta.bridge_route_stop (
     route_stop_sk    UBIGINT PRIMARY KEY,
     city             VARCHAR NOT NULL,
@@ -78,7 +83,7 @@ CREATE TABLE IF NOT EXISTS bus_eta.bridge_route_stop (
     valid_from       TIMESTAMPTZ NOT NULL,
     valid_to         TIMESTAMPTZ,
     is_current       BOOLEAN NOT NULL,
-    UNIQUE (city, route_uid, direction, stop_sequence, valid_from)
+    UNIQUE (city, route_uid, direction, stop_sequence, stop_uid, valid_from)
 );
 
 -- Native thin facts copied from Parquet. Descriptive names stay in dimensions.

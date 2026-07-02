@@ -284,14 +284,17 @@ WHERE city IS NOT NULL
   AND stop_sequence IS NOT NULL
   AND stop_uid IS NOT NULL;
 
+-- stop_uid 為自然鍵成分（見 00_schema bridge 註解）：stub 直接以全鍵比對補 hash；
+-- 「expire 改版」分支在 attr_hash 只含鍵欄位時為 vestigial，等未來 attr_hash
+-- 加入非鍵屬性（如 StopOfRoute 站名/上下車限制）才會觸發。
 UPDATE bus_eta.bridge_route_stop d
-SET stop_uid = s.stop_uid,
-    attr_hash = s.attr_hash
+SET attr_hash = s.attr_hash
 FROM stg_route_stop_hashed s
 WHERE d.city = s.city
   AND d.route_uid = s.route_uid
   AND d.direction = s.direction
   AND d.stop_sequence = s.stop_sequence
+  AND d.stop_uid = s.stop_uid
   AND d.is_current
   AND d.attr_hash = '__stub__';
 
@@ -303,6 +306,7 @@ WHERE d.city = s.city
   AND d.route_uid = s.route_uid
   AND d.direction = s.direction
   AND d.stop_sequence = s.stop_sequence
+  AND d.stop_uid = s.stop_uid
   AND d.is_current
   AND d.attr_hash <> s.attr_hash
   AND d.attr_hash <> '__stub__';
@@ -321,6 +325,7 @@ WITH missing_current AS (
           AND d.route_uid = s.route_uid
           AND d.direction = s.direction
           AND d.stop_sequence = s.stop_sequence
+          AND d.stop_uid = s.stop_uid
           AND d.is_current
           AND d.attr_hash = s.attr_hash
     )
@@ -328,7 +333,7 @@ WITH missing_current AS (
 numbered AS (
     SELECT
         (SELECT COALESCE(MAX(route_stop_sk), 0) FROM bus_eta.bridge_route_stop)
-        + row_number() OVER (ORDER BY city, route_uid, direction, stop_sequence) AS route_stop_sk,
+        + row_number() OVER (ORDER BY city, route_uid, direction, stop_sequence, stop_uid) AS route_stop_sk,
         *
     FROM missing_current
 )

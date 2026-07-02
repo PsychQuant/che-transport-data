@@ -236,13 +236,14 @@ missing AS (
           AND d.route_uid = k.route_uid
           AND d.direction = k.direction
           AND d.stop_sequence = k.stop_sequence
+          AND d.stop_uid = k.stop_uid
           AND d.is_current
     )
 ),
 numbered AS (
     SELECT
         (SELECT COALESCE(MAX(route_stop_sk), 0) FROM bus_eta.bridge_route_stop)
-        + row_number() OVER (ORDER BY city, route_uid, direction, stop_sequence) AS route_stop_sk,
+        + row_number() OVER (ORDER BY city, route_uid, direction, stop_sequence, stop_uid) AS route_stop_sk,
         *
     FROM missing
 )
