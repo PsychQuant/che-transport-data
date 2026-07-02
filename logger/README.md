@@ -2,7 +2,7 @@
 
 常駐 Python 採集器：把 TDX 公車動態（A2 進離站事件 + N1 ETA baseline）長期記錄成
 Hive 分區 Parquet，供 Phase 2 建模公車到站時間分布。源頭 ~2h 即丟、無歷史可回補，
-**誰先記誰獨有**。對應 Spectra change `bus-eta-logger`、issue PsychQuant/che-transport-mcp#8。
+**誰先記誰獨有**。對應 Spectra change `bus-eta-logger`、issue PsychQuant/che-transport-data#2（原 rush#8，隨 2026-07 分拆轉移）。
 
 部署在 **mini-che（PsychQuantMini，常開）**，資料寫 **外接 NVMe**。與 read-only 的
 che-transport MCP 完全分離。
