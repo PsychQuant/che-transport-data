@@ -163,6 +163,11 @@ def main(argv: list[str]) -> int:
         scripts = [SCHEMA_SQL, LOAD_SQL]
 
     con = duckdb.connect(args.db)
+    # 資源護欄（32GB mini 實跑 OOM 教訓）：關閉插入順序保留（大 INSERT..SELECT
+    # 的主要記憶體來源）、上限留 headroom、spill 落 DB 同碟（NVMe）而非系統碟。
+    con.execute("SET preserve_insertion_order = false")
+    con.execute("SET memory_limit = '20GB'")
+    con.execute(f"SET temp_directory = '{args.db}.tmp'")
     print(f"duckdb_version\t{duckdb.__version__}")
     started = time.monotonic()
     for path in scripts:

@@ -262,21 +262,11 @@ DELETE FROM bus_eta.fact_eta_snapshot WHERE ${FACT_DELETE_FILTER};
 DELETE FROM bus_eta.warehouse_partition_load WHERE ${FACT_DELETE_FILTER};
 
 INSERT INTO bus_eta.fact_arrival_event (
-    event_key, city, service_date, plate, route_uid, direction, stop_uid,
+    city, service_date, plate, route_uid, direction, stop_uid,
     stop_sequence, event_type, event_ts, gps_time, gps_lat, gps_lon,
     captured_at, source
 )
 SELECT
-    md5(concat_ws('|',
-        'arrival_event',
-        city,
-        COALESCE(plate, ''),
-        route_uid,
-        CAST(direction AS VARCHAR),
-        stop_uid,
-        CAST(event_type AS VARCHAR),
-        CAST(event_ts AS VARCHAR)
-    )) AS event_key,
     city, service_date, plate, route_uid, direction, stop_uid,
     stop_sequence, event_type, event_ts, gps_time, gps_lat, gps_lon,
     captured_at, source
@@ -290,46 +280,24 @@ FROM (
         ) AS rn
     FROM src_arrival_event
 ) x
-WHERE rn = 1
-ORDER BY city, service_date, captured_at;
+WHERE rn = 1;
 
 INSERT INTO bus_eta.fact_vehicle_position (
-    position_sk, city, service_date, plate, route_uid, sub_route_uid,
+    city, service_date, plate, route_uid, sub_route_uid,
     direction, gps_time, gps_lat, gps_lon, speed, azimuth,
     duty_status, bus_status, captured_at, source
-)
-WITH numbered AS (
-    SELECT
-        (SELECT COALESCE(MAX(position_sk), 0) FROM bus_eta.fact_vehicle_position)
-        + row_number() OVER (
-            ORDER BY city, service_date, captured_at, COALESCE(plate, ''),
-                     COALESCE(route_uid, ''), COALESCE(gps_time, captured_at),
-                     filename
-        ) AS position_sk,
-        *
-    FROM src_vehicle_position
 )
 SELECT
-    position_sk, city, service_date, plate, route_uid, sub_route_uid,
+    city, service_date, plate, route_uid, sub_route_uid,
     direction, gps_time, gps_lat, gps_lon, speed, azimuth,
     duty_status, bus_status, captured_at, source
-FROM numbered
-ORDER BY city, service_date, captured_at;
+FROM src_vehicle_position;
 
 INSERT INTO bus_eta.fact_eta_snapshot (
-    snapshot_key, city, service_date, captured_at, route_uid, direction,
+    city, service_date, captured_at, route_uid, direction,
     stop_uid, estimate_time_sec, stop_status, plate, src_update_time, source
 )
 SELECT
-    md5(concat_ws('|',
-        'eta_snapshot',
-        city,
-        CAST(captured_at AS VARCHAR),
-        route_uid,
-        CAST(direction AS VARCHAR),
-        stop_uid,
-        COALESCE(plate, '')
-    )) AS snapshot_key,
     city, service_date, captured_at, route_uid, direction,
     stop_uid, estimate_time_sec, stop_status, plate, src_update_time, source
 FROM (
@@ -342,8 +310,7 @@ FROM (
         ) AS rn
     FROM src_eta_snapshot
 ) x
-WHERE rn = 1
-ORDER BY city, service_date, captured_at;
+WHERE rn = 1;
 
 INSERT INTO bus_eta.warehouse_partition_load (
     table_name, city, service_date, loaded_at, source_file_count,

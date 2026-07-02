@@ -87,8 +87,11 @@ CREATE TABLE IF NOT EXISTS bus_eta.bridge_route_stop (
 );
 
 -- Native thin facts copied from Parquet. Descriptive names stay in dimensions.
+-- Fact tables carry NO primary keys / synthetic keys（2026-07-02 實跑決策）：
+-- DuckDB 以常駐記憶體、不可 spill 的 ART 索引實作 PK——億級 fact 表的索引隨載入
+-- 天數線性成長，32GB 機器 backfill 至第 9 天即 OOM。唯一性由載入管線的 dedup
+-- window 保證、verify 的 DISTINCT 計數比對守門（partition-replace 冪等不變）。
 CREATE TABLE IF NOT EXISTS bus_eta.fact_arrival_event (
-    event_key        VARCHAR PRIMARY KEY,
     city             VARCHAR NOT NULL,
     service_date     DATE NOT NULL,
     plate            VARCHAR,
@@ -106,7 +109,6 @@ CREATE TABLE IF NOT EXISTS bus_eta.fact_arrival_event (
 );
 
 CREATE TABLE IF NOT EXISTS bus_eta.fact_vehicle_position (
-    position_sk      UBIGINT PRIMARY KEY,
     city             VARCHAR NOT NULL,
     service_date     DATE NOT NULL,
     plate            VARCHAR,
@@ -125,7 +127,6 @@ CREATE TABLE IF NOT EXISTS bus_eta.fact_vehicle_position (
 );
 
 CREATE TABLE IF NOT EXISTS bus_eta.fact_eta_snapshot (
-    snapshot_key      VARCHAR PRIMARY KEY,
     city              VARCHAR NOT NULL,
     service_date      DATE NOT NULL,
     captured_at       TIMESTAMPTZ NOT NULL,
