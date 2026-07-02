@@ -2,6 +2,15 @@
 
 台灣大眾運輸資料平台（採集 → Parquet → DuckDB → 分析）。2026-07 自 `PsychQuant/rush` 分拆（歷史完整保留）；MCP 工具面在 rush，本 repo 專責資料。
 
+## Repo 定位 — standalone by design（勿掛為 submodule）
+
+本 repo **刻意獨立**，不是、也不要變成任何 repo 的 submodule（2026-07-02 決策）：
+
+- **不掛 rush**：rush 是 PUBLIC 產品 repo、本 repo PRIVATE——公開 repo 掛私有 submodule 會讓外部 `--recurse-submodules` clone 失敗，且 `.gitmodules` 公開洩漏私有路徑；兩側零 code 依賴，掛了沒有功能。
+- **不掛 che-mcps**：那是 MCP 專用傘（rush 自己也不在裡面），資料平台性質不合。
+- **例外（未來）**：bus-ETA 預測論文成案時，由**該論文專案**（private）把本 repo 掛進它的 `repos/` 當 submodule pin 版本（同 mac-benchmark ↔ macllm-roofline 的 pattern）——那才有真實消費依賴與重現性需求。
+- mini 部署依賴「直接 clone + `git pull`」的單層更新，不要引入 superproject 間接層。
+
 ## Spectra
 
 本 repo 沿用 Spectra SDD：specs 在 `openspec/specs/`、changes 在 `openspec/changes/`（`bus-eta-logger` change 隨拆分搬入，僅剩 task 8.1 七天驗收未結）。
