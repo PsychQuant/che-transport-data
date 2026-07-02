@@ -9,7 +9,13 @@
 SET TimeZone='Asia/Taipei';
 
 CREATE OR REPLACE TEMP VIEW verify_source_counts AS
-SELECT 'arrival_event' AS table_name, city, CAST(date AS DATE) AS service_date, COUNT(*)::UBIGINT AS source_rows
+-- arrival_event 比對「去重鍵的 DISTINCT 數」而非 raw 列數：bootstrap 依
+-- (city, plate, route, dir, stop, event_type, event_ts) 將同一事件的多次
+-- 捕捉（A2 每 30s 重報、event_ts 不變）折成單列，raw 對 loaded 必然不等。
+SELECT 'arrival_event' AS table_name, city, CAST(date AS DATE) AS service_date,
+       COUNT(DISTINCT concat_ws('|', city, COALESCE(plate, ''), route_uid,
+           CAST(direction AS VARCHAR), stop_uid, CAST(event_type AS VARCHAR),
+           CAST(event_ts AS VARCHAR)))::UBIGINT AS source_rows
 FROM read_parquet(
     '${PARQUET_ROOT}/arrival_event/**/*.parquet',
     hive_partitioning=true,
