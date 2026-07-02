@@ -1,0 +1,7 @@
+schema: spec-driven
+
+context: |
+  台灣大眾運輸資料平台（自 PsychQuant/rush 分拆）。
+  Python 採集器（bus-eta、weather）跑在 mini-che launchd；
+  Parquet lake 為 canonical、DuckDB warehouse 為分析快照。
+  Conventional commits；資料檔（parquet/duckdb）永不進 git。

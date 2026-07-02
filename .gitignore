@@ -1,0 +1,24 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# analysis outputs (regenerable plots)
+analysis/output/
+
+# logs
+*.log
+
+# Spectra / openspec local state
+openspec/.vector-search.db*
+.spectra/
+
+# local data (canonical data lives on mini-che NVMe, never in git)
+data/
+*.parquet
+*.duckdb
+*.duckdb.wal
