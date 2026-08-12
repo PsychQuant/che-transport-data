@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  External partition audit — deliberately a separate job from the poller.
+
+  Program MUST be the FDA-granted python itself, never a /bin/sh wrapper: macOS
+  TCC attributes access to the launchd job's Program (the responsible process),
+  and /bin/sh has no Removable Volumes grant. That trap silently killed the
+  warehouse job for 41 days (issue #3). Same external volume, same trap.
+
+  Runs at 04:00, after the 03:30 warehouse load, so a finding and the load it
+  might explain land in the same night's logs.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>tw.psychquant.bus-eta-audit</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/che830621/che-transport-data/logger/.venv/bin/python</string>
+    <string>/Users/che830621/che-transport-data/logger/audit_partitions.py</string>
+    <string>--parquet-root</string><string>/Volumes/mini-2TB-SSD/che-transport/bus-eta/parquet</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>4</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>/Users/che830621/Library/Logs/bus-eta-audit.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/che830621/Library/Logs/bus-eta-audit.err.log</string>
+</dict>
+</plist>
