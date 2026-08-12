@@ -73,6 +73,35 @@ def test_single_day_cannot_be_judged_low():
     assert ap.audit_dates({"2026-08-11": 3})["low_volume"] == []
 
 
+# ── recency window (alert fatigue is the disease we are treating) ─────────
+def test_window_keeps_only_recent_days():
+    # Permanent historical holes must not be re-reported every single night;
+    # a daily job that always says ANOMALY is a daily job nobody reads — which
+    # is exactly how the 41-day warehouse outage stayed invisible.
+    counts = {"2026-06-13": 100, "2026-08-10": 100, "2026-08-11": 100}
+    assert ap.recent(counts, today="2026-08-12", window_days=7) == {
+        "2026-08-10": 100, "2026-08-11": 100,
+    }
+
+
+def test_window_boundary_is_inclusive():
+    counts = {"2026-08-05": 100, "2026-08-06": 100}
+    # window_days=7 from 2026-08-12 → oldest kept day is 2026-08-06
+    assert ap.recent(counts, today="2026-08-12", window_days=7) == {"2026-08-06": 100}
+
+
+def test_window_of_zero_means_no_limit():
+    counts = {"2026-06-13": 100, "2026-08-11": 100}
+    assert ap.recent(counts, today="2026-08-12", window_days=0) == counts
+
+
+def test_windowed_audit_still_finds_a_hole_inside_the_window():
+    counts = {"2026-06-13": 100, "2026-08-08": 100, "2026-08-11": 100}
+    windowed = ap.recent(counts, today="2026-08-12", window_days=7)
+    out = ap.audit_dates(windowed)
+    assert out["missing"] == ["2026-08-09", "2026-08-10"]
+
+
 # ── verdict ────────────────────────────────────────────────────────────────
 def test_clean_audit_is_not_an_anomaly():
     assert ap.has_anomalies({"missing": [], "low_volume": []}) is False

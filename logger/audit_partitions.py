@@ -61,6 +61,20 @@ def audit_dates(counts: dict, *, skip_dates=(), min_ratio: float = 0.5) -> dict:
     return {"missing": missing, "low_volume": low}
 
 
+def recent(counts: dict, *, today: str, window_days: int) -> dict:
+    """Keep only the last `window_days` days (inclusive of both ends); 0 = no limit.
+
+    Old holes are permanent and already documented. Re-reporting them every night
+    turns the audit into noise, and a job that always says ANOMALY is a job nobody
+    reads — which is precisely how the 41-day warehouse outage stayed invisible
+    (#3). The audit only earns attention if a finding means something new.
+    """
+    if window_days <= 0:
+        return dict(counts)
+    oldest = datetime.date.fromisoformat(today) - datetime.timedelta(days=window_days - 1)
+    return {d: n for d, n in counts.items() if datetime.date.fromisoformat(d) >= oldest}
+
+
 def has_anomalies(result: dict) -> bool:
     return bool(result["missing"] or result["low_volume"])
 
@@ -81,12 +95,13 @@ def count_files_by_date(feed_city_dir: str) -> dict:
     return counts
 
 
-def scan(parquet_root: str, cities, today: str, min_ratio: float) -> list:
+def scan(parquet_root: str, cities, today: str, min_ratio: float,
+         window_days: int) -> list:
     findings = []
     for feed in FEEDS:
         for city in cities:
             d = os.path.join(parquet_root, feed, f"city={city}")
-            counts = count_files_by_date(d)
+            counts = recent(count_files_by_date(d), today=today, window_days=window_days)
             if not counts:
                 findings.append({"feed": feed, "city": city, "error": "no partitions found"})
                 continue
@@ -102,6 +117,10 @@ def main(argv: list) -> int:
     p.add_argument("--cities", default="Taipei,NewTaipei")
     p.add_argument("--min-ratio", type=float, default=0.5,
                    help="flag a day whose file count is below this × the median")
+    p.add_argument("--window-days", type=int, default=14,
+                   help="only audit the last N days (0 = full history). Keeps the "
+                        "daily job silent unless something NEW broke; permanent "
+                        "historical holes are documented, not re-alerted nightly")
     p.add_argument("--report-dir", help="defaults to <parquet-root>/../audit")
     args = p.parse_args(argv)
 
@@ -114,10 +133,11 @@ def main(argv: list) -> int:
     cities = [c.strip() for c in args.cities.split(",") if c.strip()]
     now = datetime.datetime.now(TPE)
     today = now.date().isoformat()
-    findings = scan(args.parquet_root, cities, today, args.min_ratio)
+    findings = scan(args.parquet_root, cities, today, args.min_ratio, args.window_days)
 
     report = {"audited_at": now.isoformat(), "today_skipped": today,
-              "min_ratio": args.min_ratio, "findings": findings}
+              "min_ratio": args.min_ratio, "window_days": args.window_days,
+              "findings": findings}
 
     report_dir = args.report_dir or os.path.normpath(
         os.path.join(args.parquet_root, "..", "audit"))
