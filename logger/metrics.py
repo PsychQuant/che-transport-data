@@ -22,6 +22,34 @@ def detect_gap(last_heartbeat, now, cycle_sec, *, min_gap_sec=None):
     return None
 
 
+def classify_write_drought(*, drought_sec, uptime_sec, already_marked,
+                           marker_sec, restart_sec, min_uptime_sec):
+    """Decide what to do about a stretch of time with no successful write.
+
+    A drought is always anomalous here: writes are continuous around the clock
+    (measured flat across all 24 hours), so there is no legitimate quiet window.
+
+    Escalation ladder:
+      - below `marker_sec`                  → None      (healthy / tolerable jitter)
+      - at or past `marker_sec`             → "marker"  (record the gap, keep running)
+      - at or past `restart_sec`            → "restart" (exit; launchd KeepAlive relaunches)
+
+    Two constraints keep this honest:
+      - `already_marked` suppresses repeat markers within one drought — the loop
+        ticks every 5s and must not append a gap line every tick. It must NOT
+        suppress escalation to "restart".
+      - `min_uptime_sec` is a floor on uptime before any restart is permitted.
+        A restart leaves `last_write` stale, so the drought looks huge again
+        immediately on boot; without this floor the daemon would restart itself
+        forever. That crash-loop is the 2026-06-10 disease and must not return.
+
+    Returns: None | "marker" | "restart"
+    """
+    # TODO(che): implement the ladder. Contract is pinned in
+    # tests/test_write_drought.py (11 cases) — run it to check.
+    raise NotImplementedError
+
+
 def dedup_count(raw_n, event_n):
     """Reports collapsed by dedup = raw reports - distinct arrival events."""
     return raw_n - event_n
