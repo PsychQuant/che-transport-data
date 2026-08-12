@@ -61,10 +61,16 @@ logger 已部署並運行於 mini-che。部署踩過三道 macOS 關卡，操作
 | launchd agent | `~/Library/LaunchAgents/tw.psychquant.bus-eta-logger.plist`，GUI domain 載入（`launchctl bootstrap gui/$(id -u) <plist>`）| RunAtLoad + KeepAlive 常駐；env 帶 `BUS_ETA_VOLUME=/Volumes/mini-2TB-SSD` + `BUS_ETA_DATA_ROOT=.../parquet`。plist 版本控制於本 repo `logger/`，改 plist 後須 bootout+bootstrap（kickstart 不重讀）|
 | TDX 憑證 | **600 本機檔** `~/.config/bus-eta-logger/tdx.json`（`{client_id, client_secret}`），**非 keychain** | launchd 讀 keychain 會卡授權對話框（classic ACL + partition list 兩道閘都認 che-keychain、不認 launchd 的 python）。改檔案 daemon 讀取永不跳框。poller `_load_creds()` 優先讀此檔、fallback keychain；檔不進 git／不上 NVMe |
 | Full Disk Access | 授 FDA 給 `/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9` | macOS TCC 擋 launchd 的 python 寫 `/Volumes` 外接卷宗（EPERM）；ssh 能寫（sshd 已授權）但 launchd 不行，須在「系統設定 → 隱私權 → 完整取用磁碟」加該 python。venv 建立要用 `/Library/Developer/CommandLineTools/usr/bin/python3`（symlink 鏈最終解到 FDA 授權的 framework binary）|
+| **plist `Program` 必須是那顆 python 本身** | ✅ `ProgramArguments[0] = .venv/bin/python`　❌ `/bin/sh wrapper.sh` | **授權主體是 launchd job 的 `Program`（TCC responsible process），不是它後來 `exec()` 出來的東西。** 包一層 `/bin/sh` 就等於拿 `/bin/sh` 去要權限——系統 shell 沒有、也不該有可移除卷宗授權。踩過（#3）：warehouse job 因為透過 `daily_incremental.sh` 呼叫，每日 03:30 連續 **41 天** 以 `Operation not permitted` 失敗，而 logger job 用同一顆 python（直接當 Program）全程寫得好好的。**修法是拆掉 sh 那層，不是去授權 `/bin/sh`**（後者把系統 shell 加進權限清單，範圍過寬）。wrapper 原本負責的事（mount guard、日期計算）搬進 python |
 
 - **程式碼位置（mini）**：`~/che-transport-data/` 的 git checkout（2026-07 起；之前為鬆散複製 `~/bus-eta-logger/`＋`~/weather-logger/`，已歸檔 `~/archive-pre-split/`）。部署更新 = `git -C ~/che-transport-data pull` ＋ 需要時 bootout+bootstrap。
 - **2026-06-10 事故**：TDX 端憑證失效（舊免費方案落日）→ 02:21 起 token 400、poller crash-loop 13h+。已修：startup/refresh token 失敗改 60s 重試（**每次重讀憑證檔**，換 key 免重啟自癒）、cycle 包非致命護欄；缺口由 gap marker 誠實記錄（37.2h）。06-11 15:35 訂閱銅級後自癒復跑。
+- **2026-08-12 事故（兩件，同一個病：失敗只進 log、沒人看）**：
+  - **warehouse 靜默失敗 41 天**（#3）：見上表 plist `Program` 那條。canonical parquet 未受影響，只有衍生層過期。
+  - **gap 偵測藏掉 5 天資料**（#4）：heartbeat 記的是「迴圈還活著」不是「資料寫進去了」（碟掛著而 cycle 全失敗時心跳照跳），且 gap 偵測**只在啟動時跑一次**。2026-06-10 修掉 crash-loop 的那個（正確的）修法，同時拿掉了偵測器唯一的觸發路徑。實測真實停擺 ≈211h/65 天（13.5%），而 `gaps.jsonl` 只記到 37.4h——**`coverage_metrics()` 目前系統性低估缺口，用它下結論前先跑稽核**。修法：`audit_partitions.py`（獨立每日 job，偵測器不可與被偵測對象同 process）+ `classify_write_drought()`（迴圈內偵測、逐步升級、uptime 地板防 crash-loop）。
+- **不可回補**：TDX 公車動態只滾動保留 ~2h。缺的就是永久缺的，所以偵測延遲直接等於資料損失——這是 log-only 監控在這個系統裡特別貴的原因。
 - **重啟 agent**（plist 未變時）：`ssh mini-che 'launchctl kickstart -k gui/$(id -u)/tw.psychquant.bus-eta-logger'`
+- **稽核資料完整性**：`ssh mini-che '~/che-transport-data/logger/.venv/bin/python ~/che-transport-data/logger/audit_partitions.py --parquet-root /Volumes/mini-2TB-SSD/che-transport/bus-eta/parquet --window-days 0'`（`--window-days 0` = 全歷史；每日 job 預設只看近 14 天以免歷史缺口天天重報而失去注意力）
 - **看狀態**：`ssh mini-che 'launchctl list | grep bus-eta; tail ~/Library/Logs/bus-eta-logger.err.log'`
 - **查資料量**：`ssh mini-che 'find /Volumes/mini-2TB-SSD/che-transport/bus-eta/parquet -name "*.parquet" | wc -l'`
 
