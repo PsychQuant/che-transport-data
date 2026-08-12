@@ -1,12 +1,28 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Program MUST be the FDA-granted python itself, never a /bin/sh wrapper.
+  macOS TCC attributes access to the launchd job's Program (the responsible
+  process), not to whatever that program later exec()s. With /bin/sh in front,
+  the responsible process was /bin/sh — which has no Removable Volumes grant —
+  so every 03:30 run died with `IO Error: ... Operation not permitted` on the
+  external NVMe. Silent for 41 days (2026-07-03 .. 2026-08-12).
+
+  The logger plist has always invoked this same interpreter path directly, which
+  is why it kept writing throughout. Mount guard and "yesterday" resolution now
+  live in run_warehouse_sql.py so this plist can stay declarative.
+-->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>tw.psychquant.bus-eta-warehouse</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/sh</string>
-    <string>/Users/che830621/che-transport-data/logger/warehouse/daily_incremental.sh</string>
+    <string>/Users/che830621/che-transport-data/logger/.venv/bin/python</string>
+    <string>/Users/che830621/che-transport-data/logger/warehouse/run_warehouse_sql.py</string>
+    <string>--mode</string><string>incremental</string>
+    <string>--db</string><string>/Volumes/mini-2TB-SSD/che-transport/bus-eta/warehouse/warehouse.duckdb</string>
+    <string>--parquet-root</string><string>/Volumes/mini-2TB-SSD/che-transport/bus-eta/parquet</string>
+    <string>--load-yesterday</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>

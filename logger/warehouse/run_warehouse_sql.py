@@ -12,6 +12,7 @@ import pathlib
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta, timezone
 
 import duckdb
 
@@ -22,6 +23,46 @@ LOAD_SQL = HERE / "10_bootstrap.sql"
 SCD2_SQL = HERE / "30_scd2_patterns.sql"
 VERIFY_SQL = HERE / "90_verify.sql"
 COMPAT_SQL = HERE / "compat_probe.sql"
+
+TPE = timezone(timedelta(hours=8))
+
+
+def ensure_parquet_root(parquet_root: str) -> None:
+    """Mount guard — refuse to run when the NVMe is absent.
+
+    Lifted out of the retired daily_incremental.sh: launchd attributes TCC to
+    the job's Program, so a /bin/sh wrapper made /bin/sh the responsible process
+    (no Removable Volumes grant) and every scheduled run died with EPERM. The
+    plist now invokes this module directly with the FDA-granted python, which
+    means the guard has to live here.
+    """
+    if not pathlib.Path(parquet_root).is_dir():
+        raise SystemExit(
+            f"volume not mounted (no such directory: {parquet_root}); aborting "
+            "rather than writing to the system disk"
+        )
+
+
+def yesterday_taipei(now: datetime | None = None) -> str:
+    """Yesterday's partition date on the Asia/Taipei calendar.
+
+    Always resolved at +08:00: the job fires at 03:30 Taipei, which is still the
+    previous day in UTC, so a naive/UTC 'yesterday' would silently load the
+    partition one day too far back — every night, successfully, and wrongly.
+    """
+    now = now or datetime.now(TPE)
+    return (now.astimezone(TPE).date() - timedelta(days=1)).isoformat()
+
+
+def resolve_load_date(
+    load_date: str | None, load_yesterday: bool, now: datetime | None = None
+) -> str | None:
+    """Explicit --load-date always wins; --load-yesterday only fills a blank."""
+    if load_date:
+        return load_date
+    if load_yesterday:
+        return yesterday_taipei(now)
+    return None
 
 
 def sql_quote(value: str) -> str:
@@ -133,12 +174,21 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--parquet-root", required=True, help="canonical bus-eta/parquet root")
     parser.add_argument("--cities", default="Taipei,NewTaipei", help="comma-separated city codes")
     parser.add_argument("--load-date", help="single YYYY-MM-DD partition")
+    parser.add_argument(
+        "--load-yesterday",
+        action="store_true",
+        help="use yesterday's partition (Asia/Taipei) when --load-date is absent; "
+             "lets the launchd plist stay declarative with no shell wrapper",
+    )
     parser.add_argument("--start-date", help="inclusive YYYY-MM-DD")
     parser.add_argument("--end-date", help="inclusive YYYY-MM-DD")
     parser.add_argument("--scd-valid-from", help="TIMESTAMPTZ literal value for SCD2 changes")
     parser.add_argument("--tmp-dir", default=tempfile.gettempdir())
     parser.add_argument("--print-sql", action="store_true")
     args = parser.parse_args(argv)
+
+    args.load_date = resolve_load_date(args.load_date, args.load_yesterday)
+    ensure_parquet_root(args.parquet_root)
 
     replacements = predicates(args)
     replacements.update(
