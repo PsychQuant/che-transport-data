@@ -88,19 +88,44 @@ class DryRunSink:
         print(f"[notify dry-run/{severity}] {message}", file=sys.stderr)
 
 
+class DeliveryError(Exception):
+    """Delivery failed. Message is guaranteed free of the bot token."""
+
+
+def redact(text: str, secret) -> str:
+    """Strip `secret` out of `text`. No-op when there is no secret."""
+    if not secret:
+        return text
+    return text.replace(secret, "***REDACTED***")
+
+
 class TelegramSink:
-    def __init__(self, token: str, chat_id: str):
+    """Telegram delivery.
+
+    ⚠ Telegram puts the bot token in the URL **path**, and httpx embeds the full
+    URL in `HTTPStatusError`. Since `report()` prints delivery failures to
+    stderr — which lands in bus-eta-*.err.log, a file that lives for months —
+    letting that exception through verbatim would turn a single 401 into a
+    permanent credential leak. Every error out of this class is redacted first.
+    """
+
+    def __init__(self, token: str, chat_id: str, *, transport=None):
         self.token = token
         self.chat_id = chat_id
+        self._transport = transport  # DI seam for offline tests
 
     def send(self, severity: str, message: str) -> None:
         import httpx  # already a dependency; imported lazily to keep tests offline
 
-        httpx.post(
-            f"https://api.telegram.org/bot{self.token}/sendMessage",
-            json={"chat_id": self.chat_id, "text": message},
-            timeout=10,
-        ).raise_for_status()
+        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        try:
+            with httpx.Client(transport=self._transport, timeout=10) as client:
+                client.post(
+                    url, json={"chat_id": self.chat_id, "text": message}
+                ).raise_for_status()
+        except Exception as exc:
+            # `from None` so no chained traceback can carry the URL either.
+            raise DeliveryError(redact(f"{type(exc).__name__}: {exc}", self.token)) from None
 
 
 def build_sink(token, chat_id):

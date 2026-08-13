@@ -18,6 +18,8 @@ import json
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import notify  # noqa: E402
 
@@ -214,3 +216,46 @@ def test_telegram_sink_degrades_to_dry_run_without_credentials(capsys):
 def test_build_sink_returns_telegram_when_fully_configured():
     sink = notify.build_sink(token="t", chat_id="c")
     assert isinstance(sink, notify.TelegramSink)
+
+
+# ── credential must never reach a log file ─────────────────────────────────
+def test_telegram_sink_does_not_leak_token_on_http_error():
+    """Telegram puts the bot token in the URL path, and httpx's HTTPStatusError
+    message embeds the full URL. Printing that exception — which `report()` does
+    on delivery failure — would write the token into bus-eta-*.err.log, a file
+    that lives for months. One 401 would be a permanent credential leak.
+    """
+    import httpx
+
+    def handler(request):
+        return httpx.Response(401, json={"description": "Unauthorized"})
+
+    sink = notify.TelegramSink("SECRET-TOKEN-123", "chat-1",
+                               transport=httpx.MockTransport(handler))
+    with pytest.raises(Exception) as exc:
+        sink.send("routine", "hi")
+    assert "SECRET-TOKEN-123" not in str(exc.value)
+    assert "401" in str(exc.value)          # still diagnosable
+
+
+def test_redaction_survives_report_error_path(tmp_path, capsys):
+    """End to end: a failing TelegramSink must not put the token on stderr."""
+    import httpx
+
+    def handler(request):
+        return httpx.Response(401, json={"description": "Unauthorized"})
+
+    sink = notify.TelegramSink("SECRET-TOKEN-123", "chat-1",
+                               transport=httpx.MockTransport(handler))
+    action = notify.report("bus-eta-audit", ok=False, detail="d", sink=sink,
+                           state_path=str(tmp_path / "s.json"), now=NOW)
+    assert action == "delivery-failed"
+    assert "SECRET-TOKEN-123" not in capsys.readouterr().err
+
+
+def test_redact_replaces_every_occurrence():
+    assert "tok" not in notify.redact("a tok b tok c", "tok")
+
+
+def test_redact_is_a_noop_without_a_secret():
+    assert notify.redact("plain message", None) == "plain message"
