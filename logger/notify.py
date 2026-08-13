@@ -115,6 +115,29 @@ def build_sink(token, chat_id):
     return TelegramSink(token, chat_id)
 
 
+def from_env():
+    """(sink, state_path) from the environment — shared by every entry point so
+    the three callers cannot drift on credential lookup or state location.
+
+    State lives on the SYSTEM disk, not the external NVMe: "the volume is gone"
+    is itself a notifiable event, and state stored on a volume that can vanish
+    is unreadable exactly when it matters most.
+    """
+    state_path = os.environ.get(
+        "BUS_ETA_NOTIFY_STATE",
+        os.path.expanduser("~/.bus-eta-logger/notify-state.json"),
+    )
+    sink = build_sink(os.environ.get("BUS_ETA_NOTIFY_TOKEN"),
+                      os.environ.get("BUS_ETA_NOTIFY_CHAT_ID"))
+    return sink, state_path
+
+
+def summarize(exc: BaseException, limit: int = 300) -> str:
+    """One-line-ish rendering of an exception for the alert body."""
+    text = f"{type(exc).__name__}: {exc}".strip()
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
 def report(job: str, ok: bool, detail: str = "", *, sink,
            state_path: str, now: datetime.datetime = None) -> str:
     """Report a job outcome. Returns what actually happened.

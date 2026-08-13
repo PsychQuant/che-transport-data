@@ -28,8 +28,11 @@ import pathlib
 import statistics
 import sys
 
+import notify
+
 TPE = datetime.timezone(datetime.timedelta(hours=8))
 FEEDS = ("arrival_event", "eta_snapshot", "vehicle_position")
+JOB = "bus-eta-audit"  # == launchd label == notify state key
 
 
 def audit_dates(counts: dict, *, skip_dates=(), min_ratio: float = 0.5) -> dict:
@@ -112,6 +115,28 @@ def scan(parquet_root: str, cities, today: str, min_ratio: float,
 
 
 def main(argv: list) -> int:
+    """Run the audit and report the outcome (issue #5).
+
+    Catches BaseException, not Exception: the mount guard below signals an
+    absent NVMe with `raise SystemExit`, which does NOT inherit from Exception.
+    `except Exception` here would silently drop the single most important alert
+    this job can produce.
+    """
+    sink, state_path = notify.from_env()
+    try:
+        rc = _run(argv)
+    except BaseException as exc:
+        notify.report(JOB, ok=False, detail=notify.summarize(exc),
+                      sink=sink, state_path=state_path)
+        raise
+    # A finding IS the failure worth telling someone about: the program ran
+    # fine, the data has a hole.
+    notify.report(JOB, ok=(rc == 0), detail="" if rc == 0 else "partition audit found anomalies",
+                  sink=sink, state_path=state_path)
+    return rc
+
+
+def _run(argv: list) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--parquet-root", required=True)
     p.add_argument("--cities", default="Taipei,NewTaipei")

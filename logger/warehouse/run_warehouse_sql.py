@@ -16,8 +16,12 @@ from datetime import datetime, timedelta, timezone
 
 import duckdb
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import notify  # noqa: E402  — sibling package dir, resolved above
+
 
 HERE = pathlib.Path(__file__).resolve().parent
+JOB = "bus-eta-warehouse"  # == launchd label == notify state key
 SCHEMA_SQL = HERE / "00_schema.sql"
 LOAD_SQL = HERE / "10_bootstrap.sql"
 SCD2_SQL = HERE / "30_scd2_patterns.sql"
@@ -168,6 +172,26 @@ def run_sql(con: duckdb.DuckDBPyConnection, sql: str) -> None:
 
 
 def main(argv: list[str]) -> int:
+    """Run the requested workload and report the outcome (issue #5).
+
+    Catches BaseException, not Exception: `ensure_parquet_root` signals an
+    absent NVMe with `raise SystemExit`, which does NOT inherit from Exception.
+    `except Exception` here would silently drop exactly the alert that would
+    have caught #3 forty-one days earlier.
+    """
+    sink, state_path = notify.from_env()
+    try:
+        rc = _run(argv)
+    except BaseException as exc:
+        notify.report(JOB, ok=False, detail=notify.summarize(exc),
+                      sink=sink, state_path=state_path)
+        raise
+    notify.report(JOB, ok=(rc == 0), detail="" if rc == 0 else f"exit code {rc}",
+                  sink=sink, state_path=state_path)
+    return rc
+
+
+def _run(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=["bootstrap", "incremental", "verify", "scd2", "compat"], required=True)
     parser.add_argument("--db", required=True, help="DuckDB database path")
