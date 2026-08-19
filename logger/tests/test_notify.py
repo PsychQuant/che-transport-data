@@ -458,9 +458,10 @@ def test_prune_before_drops_old_items_without_changing_the_verdict(tmp_path):
     window only moves forward — a pruned item cannot re-enter findings."""
     sp = str(tmp_path / "s.json")
     sink = RecordingSink()
-    notify.report_new("bus-eta-audit", [ITEM_A, ITEM_C], sink=sink, state_path=sp, now=NOW)
+    notify.report_new("bus-eta-audit", [ITEM_A, ITEM_C], sink=sink, state_path=sp, now=NOW,
+                      prune_before="2026-08-01", window_days=14)
     notify.report_new("bus-eta-audit", [ITEM_C], sink=sink, state_path=sp, now=NOW,
-                      prune_before="2026-08-03")
+                      prune_before="2026-08-03", window_days=14)
     assert notify.load_state(sp)["bus-eta-audit#seen"] == [ITEM_C]   # A pruned
 
 
@@ -484,3 +485,172 @@ def test_report_new_does_not_disturb_report_state(tmp_path):
     st = notify.load_state(sp)
     assert st["bus-eta-audit"] == "fail"
     assert st["bus-eta-audit#seen"] == [ITEM_A]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Round 2 (issue #7 after verify FAIL): per-kind dispatch support
+# ══════════════════════════════════════════════════════════════════════════
+
+# ── DP2: compound keys inherit their base job's severity ──────────────────
+def test_compound_key_inherits_base_job_severity():
+    """`error` conditions get one boolean per (feed, city), so the job key is
+    compound. Falling through to the unknown-job default would work by accident
+    — that default exists to catch PROGRAMMING ERRORS, and relying on it to
+    deliver correct severity is the accidental-coverage antipattern verify
+    called out. Resolve the prefix explicitly instead."""
+    assert notify.classify_severity("bus-eta-audit:arrival_event/Taipei") == "routine"
+    assert notify.classify_severity("bus-eta-logger:x/y") == "critical"
+
+
+def test_bare_job_names_are_unchanged():
+    assert notify.classify_severity("bus-eta-audit") == "routine"
+    assert notify.classify_severity("bus-eta-warehouse") == "routine"
+    assert notify.classify_severity("bus-eta-logger") == "critical"
+
+
+def test_genuinely_unknown_job_is_still_critical():
+    assert notify.classify_severity("something-new") == "critical"
+    assert notify.classify_severity("something-new:sub") == "critical"
+
+
+# ── DP6: atomic state write ───────────────────────────────────────────────
+def test_save_state_leaves_no_temp_file(tmp_path):
+    """DP2 takes the per-run write count from 2 to 8, so the truncate window of
+    a plain open('w') is widened fourfold. Write via tmp + os.replace."""
+    p = tmp_path / "s.json"
+    notify.save_state(str(p), {"a": "ok"})
+    assert [f.name for f in tmp_path.iterdir()] == ["s.json"]
+
+
+def test_failed_write_leaves_previous_content_intact(tmp_path):
+    p = tmp_path / "s.json"
+    notify.save_state(str(p), {"a": "ok"})
+    tmp_path.chmod(0o500)                       # dir unwritable → tmp create fails
+    try:
+        with pytest.raises(OSError):
+            notify.save_state(str(p), {"a": "fail"})
+    finally:
+        tmp_path.chmod(0o700)
+    assert notify.load_state(str(p)) == {"a": "ok"}     # old content survived
+
+
+# ── DP4: legacy state migration via explicit schema key ───────────────────
+def test_migration_drops_legacy_job_key(tmp_path):
+    """Old code wrote state[job]='fail' when findings existed; new code writes
+    'ok' whenever the job runs, so the first run after upgrade would emit the
+    very [RECOVERED] this issue exists to eliminate."""
+    p = str(tmp_path / "s.json")
+    notify.save_state(p, {"bus-eta-audit": "fail"})
+    notify.migrate_state(p, ["bus-eta-audit"])
+    st = notify.load_state(p)
+    assert "bus-eta-audit" not in st
+    assert st["#schema"] == 2
+
+
+def test_migration_is_idempotent(tmp_path):
+    p = str(tmp_path / "s.json")
+    notify.save_state(p, {"bus-eta-audit": "fail"})
+    notify.migrate_state(p, ["bus-eta-audit"])
+    notify.report("bus-eta-audit", ok=False, detail="d",
+                  sink=RecordingSink(), state_path=p, now=NOW)
+    notify.migrate_state(p, ["bus-eta-audit"])          # must NOT wipe the fresh state
+    assert notify.load_state(p)["bus-eta-audit"] == "fail"
+
+
+def test_migration_marks_a_brand_new_file(tmp_path):
+    p = str(tmp_path / "s.json")
+    notify.migrate_state(p, ["bus-eta-audit"])
+    assert notify.load_state(p) == {"#schema": 2}
+
+
+def test_upgrade_from_legacy_fail_does_not_announce_recovery(tmp_path):
+    """The end-to-end point of DP4."""
+    p = str(tmp_path / "s.json")
+    notify.save_state(p, {"bus-eta-audit": "fail"})
+    notify.migrate_state(p, ["bus-eta-audit"])
+    sink = RecordingSink()
+    notify.report("bus-eta-audit", ok=True, sink=sink, state_path=p, now=NOW)
+    assert "RECOVERED" not in "".join(m for _, m in sink.sent)
+
+
+# ── DP3: message chunking, partial consumption ────────────────────────────
+def _many(n):
+    return [f"arrival_event/Taipei/missing/2026-{(i // 28) + 1:02d}-{(i % 28) + 1:02d}#{i}"
+            for i in range(n)]
+
+
+def test_large_item_set_is_split_into_several_messages(tmp_path):
+    sink = RecordingSink()
+    items = _many(200)
+    out = notify.report_new("bus-eta-audit", items, sink=sink,
+                            state_path=str(tmp_path / "s.json"), now=NOW, char_budget=800)
+    assert len(sink.sent) > 1
+    assert all(len(m) <= 800 for _, m in sink.sent)
+    assert out["status"] == "alerted"
+    assert set(out["alerted"]) == set(items)
+
+
+class FlakySink:
+    """Delivers the first N sends, then raises — mimics Telegram rejecting an
+    oversized or rate-limited message partway through a batch."""
+    delivers = True
+
+    def __init__(self, ok_count):
+        self.ok_count = ok_count
+        self.sent = []
+
+    def send(self, severity, message):
+        if len(self.sent) >= self.ok_count:
+            raise RuntimeError("rejected")
+        self.sent.append(message)
+
+
+def test_partial_delivery_consumes_only_what_was_delivered(tmp_path):
+    """Without this, one rejected chunk makes the whole batch retry forever —
+    and the bigger the outage, the more certain the alert never arrives."""
+    sp = str(tmp_path / "s.json")
+    items = _many(200)
+    out = notify.report_new("bus-eta-audit", items, sink=FlakySink(1),
+                            state_path=sp, now=NOW, char_budget=800)
+    assert out["status"] == "partial"
+    seen = notify.load_state(sp)["bus-eta-audit#seen"]
+    assert 0 < len(seen) < len(items)
+    # The undelivered remainder must still be pending.
+    sink2 = RecordingSink()
+    out2 = notify.report_new("bus-eta-audit", items, sink=sink2, state_path=sp, now=NOW)
+    assert out2["status"] == "alerted"
+    assert set(out2["alerted"]) == set(items) - set(seen)
+
+
+# ── DP5: prune only when the window width is unchanged ────────────────────
+def test_prune_runs_when_window_width_matches(tmp_path):
+    sp = str(tmp_path / "s.json")
+    sink = RecordingSink()
+    notify.report_new("bus-eta-audit", [ITEM_A, ITEM_C], sink=sink, state_path=sp,
+                      now=NOW, prune_before="2026-08-01", window_days=14)
+    notify.report_new("bus-eta-audit", [ITEM_C], sink=sink, state_path=sp,
+                      now=NOW, prune_before="2026-08-03", window_days=14)
+    assert notify.load_state(sp)["bus-eta-audit#seen"] == [ITEM_C]
+
+
+def test_prune_is_skipped_when_window_width_changed(tmp_path):
+    """The old docstring claimed unconditionally that 'the window only moves
+    forward'. That holds only at a FIXED width — and CLAUDE.md documents a
+    manual --window-days 0 run against the same state file. A narrower run must
+    never prune what a wider run would still find."""
+    sp = str(tmp_path / "s.json")
+    sink = RecordingSink()
+    notify.report_new("bus-eta-audit", [ITEM_A, ITEM_C], sink=sink, state_path=sp,
+                      now=NOW, prune_before="2026-08-01", window_days=14)
+    notify.report_new("bus-eta-audit", [ITEM_C], sink=sink, state_path=sp,
+                      now=NOW, prune_before="2026-08-03", window_days=2)
+    assert set(notify.load_state(sp)["bus-eta-audit#seen"]) == {ITEM_A, ITEM_C}
+
+
+def test_no_window_days_means_no_pruning(tmp_path):
+    sp = str(tmp_path / "s.json")
+    sink = RecordingSink()
+    notify.report_new("bus-eta-audit", [ITEM_A, ITEM_C], sink=sink, state_path=sp, now=NOW)
+    notify.report_new("bus-eta-audit", [ITEM_C], sink=sink, state_path=sp,
+                      now=NOW, prune_before="2026-08-03")
+    assert set(notify.load_state(sp)["bus-eta-audit#seen"]) == {ITEM_A, ITEM_C}
