@@ -110,3 +110,71 @@ def test_clean_audit_is_not_an_anomaly():
 def test_any_finding_is_an_anomaly():
     assert ap.has_anomalies({"missing": ["2026-08-01"], "low_volume": []}) is True
     assert ap.has_anomalies({"missing": [], "low_volume": ["2026-08-01"]}) is True
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# finding_items — stable identity for alert-once semantics (issue #7)
+# ══════════════════════════════════════════════════════════════════════════
+# Identity is feed/city/kind/date and deliberately excludes the file COUNT:
+# counts fluctuate normally every day, so including them would make the audit
+# ring nightly — recreating the #3 alert-fatigue silence this is meant to avoid.
+
+def test_missing_days_become_one_item_each():
+    findings = [{"feed": "arrival_event", "city": "Taipei",
+                 "missing": ["2026-08-01", "2026-08-02"], "low_volume": []}]
+    assert ap.finding_items(findings) == [
+        "arrival_event/Taipei/missing/2026-08-01",
+        "arrival_event/Taipei/missing/2026-08-02",
+    ]
+
+
+def test_low_volume_days_are_a_distinct_kind():
+    findings = [{"feed": "eta_snapshot", "city": "NewTaipei",
+                 "missing": [], "low_volume": ["2026-08-03"]}]
+    assert ap.finding_items(findings) == ["eta_snapshot/NewTaipei/low_volume/2026-08-03"]
+
+
+def test_same_date_missing_and_low_volume_are_different_items():
+    findings = [{"feed": "f", "city": "c", "missing": ["2026-08-01"],
+                 "low_volume": ["2026-08-01"]}]
+    assert len(set(ap.finding_items(findings))) == 2
+
+
+def test_error_shaped_finding_has_no_date_component():
+    """`scan()` emits {feed, city, error} when a feed dir is empty — a different
+    shape with no per-date detail. It must still get a stable identity."""
+    findings = [{"feed": "vehicle_position", "city": "Taipei",
+                 "error": "no partitions found"}]
+    assert ap.finding_items(findings) == ["vehicle_position/Taipei/error"]
+
+
+def test_multiple_findings_are_flattened_in_stable_order():
+    findings = [
+        {"feed": "a", "city": "Taipei", "missing": ["2026-08-02"], "low_volume": []},
+        {"feed": "b", "city": "Taipei", "missing": ["2026-08-01"], "low_volume": []},
+    ]
+    assert ap.finding_items(findings) == [
+        "a/Taipei/missing/2026-08-02", "b/Taipei/missing/2026-08-01"]
+
+
+def test_no_findings_yields_no_items():
+    assert ap.finding_items([]) == []
+
+
+def test_identity_is_independent_of_file_counts(tmp_path):
+    """Risk 1 pinned: the same hole on two nights with different surrounding
+    file counts must produce the SAME item, or the audit rings every night."""
+    root = tmp_path / "parquet"
+    def build(counts):
+        import shutil
+        shutil.rmtree(root, ignore_errors=True)
+        for d, n in counts.items():
+            p = root / "arrival_event" / "city=Taipei" / f"date={d}"
+            p.mkdir(parents=True)
+            for i in range(n):
+                (p / f"{i}.parquet").write_text("")
+        return ap.finding_items(ap.scan(str(root), ["Taipei"], "2026-08-05", 0.5, 0))
+
+    night1 = build({"2026-08-01": 100, "2026-08-03": 100})   # 08-02 missing
+    night2 = build({"2026-08-01": 137, "2026-08-03": 94})    # same hole, other counts
+    assert night1 == night2

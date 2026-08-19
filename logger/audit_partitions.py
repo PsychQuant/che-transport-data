@@ -114,6 +114,30 @@ def scan(parquet_root: str, cities, today: str, min_ratio: float,
     return findings
 
 
+def finding_items(findings) -> list:
+    """Flatten findings into stable per-finding identities.
+
+    Identity is `<feed>/<city>/<kind>/<date>` and deliberately **excludes the
+    file count**: counts fluctuate normally every night, so folding them in
+    would make the audit ring daily — recreating exactly the alert fatigue that
+    let #3 stay invisible for 41 days.
+
+    `scan()` emits two shapes; both are handled:
+      - {feed, city, missing: [...], low_volume: [...]}
+      - {feed, city, error: "..."}   → `<feed>/<city>/error` (no date component)
+    """
+    items = []
+    for f in findings:
+        prefix = f"{f['feed']}/{f['city']}"
+        if "error" in f:
+            items.append(f"{prefix}/error")
+            continue
+        for kind in ("missing", "low_volume"):
+            for date in f.get(kind, []):
+                items.append(f"{prefix}/{kind}/{date}")
+    return items
+
+
 def main(argv: list) -> int:
     """Run the audit and report the outcome (issue #5).
 
@@ -133,17 +157,29 @@ def main(argv: list) -> int:
     args = _parse_args(argv)          # argparse SystemExit never reaches the guard
     sink, state_path = notify.from_env()
     try:
-        rc = _run(args)
+        rc, findings, oldest = _run(args)
     except BaseException as exc:
         if notify.is_benign_exit(exc):
             raise                      # clean exit / Ctrl-C: not a job outcome
         notify.report(JOB, ok=False, detail=notify.summarize(exc),
                       sink=sink, state_path=state_path)
         raise
-    # A finding IS the failure worth telling someone about: the program ran
-    # fine, the data has a hole.
-    notify.report(JOB, ok=(rc == 0), detail="" if rc == 0 else "partition audit found anomalies",
-                  sink=sink, state_path=state_path)
+    # Two levels, two primitives (issue #7) — they answer different questions:
+    #
+    #   job level  — did the audit run? Genuinely binary, and it DOES have a real
+    #                recovery (the NVMe coming back). This MUST run on the normal
+    #                path too: without it a mount-guard failure would leave the
+    #                state at "fail" forever and the disk's return would never be
+    #                announced.
+    #   data level — WHICH holes exist. A set of permanent facts, not a state.
+    #                Nothing here ever recovers (TDX retains ~2h), so alerting
+    #                per unseen finding is the honest shape.
+    #
+    # Sequential is safe: each loads state fresh and writes back with
+    # {**state, key: value}; report() owns key `JOB`, report_new() owns `JOB#seen`.
+    notify.report(JOB, ok=True, sink=sink, state_path=state_path)
+    notify.report_new(JOB, finding_items(findings),
+                      sink=sink, state_path=state_path, prune_before=oldest)
     return rc
 
 
@@ -161,7 +197,8 @@ def _parse_args(argv: list):
     return p.parse_args(argv)
 
 
-def _run(args) -> int:
+def _run(args):
+    """Returns (exit_code, findings, oldest_date_in_window)."""
 
     if not pathlib.Path(args.parquet_root).is_dir():
         raise SystemExit(
@@ -173,6 +210,11 @@ def _run(args) -> int:
     now = datetime.datetime.now(TPE)
     today = now.date().isoformat()
     findings = scan(args.parquet_root, cities, today, args.min_ratio, args.window_days)
+    # Bound the seen-set by the same window the audit uses. Safe because the
+    # window only moves forward — a pruned item cannot re-enter findings.
+    oldest = None
+    if args.window_days > 0:
+        oldest = (now.date() - datetime.timedelta(days=args.window_days - 1)).isoformat()
 
     report = {"audited_at": now.isoformat(), "today_skipped": today,
               "min_ratio": args.min_ratio, "window_days": args.window_days,
@@ -186,10 +228,10 @@ def _run(args) -> int:
 
     if not findings:
         print(f"{today}\tOK\tno missing or low-volume partitions")
-        return 0
+        return 0, findings, oldest
     for item in findings:
         print(f"{today}\tANOMALY\t{json.dumps(item, ensure_ascii=False)}")
-    return 1
+    return 1, findings, oldest
 
 
 if __name__ == "__main__":
