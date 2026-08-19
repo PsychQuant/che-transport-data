@@ -114,24 +114,56 @@ def scan(parquet_root: str, cities, today: str, min_ratio: float,
     return findings
 
 
+# ── The three kinds, enumerated. Do NOT replace this with a general rule. ──
+#
+#   kind         asserts                              recovers  recurs  primitive
+#   ───────────  ───────────────────────────────────  ────────  ──────  ──────────
+#   missing      a PAST date has no partition            no       no     report_new
+#   low_volume   a PAST date collapsed vs its window     no      (*)     report_new
+#   error        this feed/city is dark RIGHT NOW       YES      YES     report()
+#
+#   (*) the finding itself flickers as the window median moves — that is a
+#       DETECTOR defect, tracked in #8, not something this module can fix.
+#
+# Round 1 of #7 derived a single law ("nothing here ever recovers") from the
+# `missing` row alone and applied it to all three. `error` regressed to
+# permanently silent after its first episode — strictly worse than the boolean
+# code it replaced. A fourth kind means ADDING A ROW, never generalising.
+KIND_SEMANTICS = ("missing", "low_volume", "error")
+
+
+def error_conditions(findings, cities) -> list:
+    """[(feed, city, is_dark)] over the FULL cross product.
+
+    Every combination gets a verdict each run, not just the failing ones — to
+    ANNOUNCE a recovery you must report ok=True for a combination that
+    previously errored.
+
+    Per (feed, city), never aggregated: one shared boolean would re-create B5
+    (feed A goes dark and rings; feed B then goes dark while the aggregate is
+    already "fail", so silence).
+    """
+    dark = {(f["feed"], f["city"]) for f in findings if "error" in f}
+    return [(feed, city, (feed, city) in dark) for feed in FEEDS for city in cities]
+
+
 def finding_items(findings) -> list:
-    """Flatten findings into stable per-finding identities.
+    """Flatten the two DATE-shaped kinds into stable per-finding identities.
 
     Identity is `<feed>/<city>/<kind>/<date>` and deliberately **excludes the
     file count**: counts fluctuate normally every night, so folding them in
     would make the audit ring daily — recreating exactly the alert fatigue that
     let #3 stay invisible for 41 days.
 
-    `scan()` emits two shapes; both are handled:
-      - {feed, city, missing: [...], low_volume: [...]}
-      - {feed, city, error: "..."}   → `<feed>/<city>/error` (no date component)
+    The `{feed, city, error}` shape is deliberately NOT included — it describes
+    a current condition that recovers and recurs, so it goes through
+    `error_conditions()` + `report()`. See KIND_SEMANTICS above.
     """
     items = []
     for f in findings:
-        prefix = f"{f['feed']}/{f['city']}"
         if "error" in f:
-            items.append(f"{prefix}/error")
             continue
+        prefix = f"{f['feed']}/{f['city']}"
         for kind in ("missing", "low_volume"):
             for date in f.get(kind, []):
                 items.append(f"{prefix}/{kind}/{date}")
@@ -155,31 +187,30 @@ def main(argv: list) -> int:
       outcome, so it is re-raised untouched.
     """
     args = _parse_args(argv)          # argparse SystemExit never reaches the guard
-    sink, state_path = notify.from_env()
+    notifying = not args.no_notify
+    if notifying:
+        sink, state_path = notify.from_env()
+        notify.migrate_state(state_path, [JOB])
     try:
-        rc, findings, oldest = _run(args)
+        rc, findings, oldest, cities = _run(args)
     except BaseException as exc:
         if notify.is_benign_exit(exc):
             raise                      # clean exit / Ctrl-C: not a job outcome
-        notify.report(JOB, ok=False, detail=notify.summarize(exc),
-                      sink=sink, state_path=state_path)
+        if notifying:
+            notify.report(JOB, ok=False, detail=notify.summarize(exc),
+                          sink=sink, state_path=state_path)
         raise
-    # Two levels, two primitives (issue #7) — they answer different questions:
-    #
-    #   job level  — did the audit run? Genuinely binary, and it DOES have a real
-    #                recovery (the NVMe coming back). This MUST run on the normal
-    #                path too: without it a mount-guard failure would leave the
-    #                state at "fail" forever and the disk's return would never be
-    #                announced.
-    #   data level — WHICH holes exist. A set of permanent facts, not a state.
-    #                Nothing here ever recovers (TDX retains ~2h), so alerting
-    #                per unseen finding is the honest shape.
-    #
-    # Sequential is safe: each loads state fresh and writes back with
-    # {**state, key: value}; report() owns key `JOB`, report_new() owns `JOB#seen`.
-    notify.report(JOB, ok=True, sink=sink, state_path=state_path)
-    notify.report_new(JOB, finding_items(findings),
-                      sink=sink, state_path=state_path, prune_before=oldest)
+    if notifying:
+        # Three kinds, three semantics — see KIND_SEMANTICS. Sequential writes
+        # are safe: each call reloads state and writes back with
+        # {**state, key: value}, and every key here is distinct.
+        notify.report(JOB, ok=True, sink=sink, state_path=state_path)
+        for feed, city, dark in error_conditions(findings, cities):
+            notify.report(f"{JOB}:{feed}/{city}", ok=not dark,
+                          detail="no partitions found in window" if dark else "",
+                          sink=sink, state_path=state_path)
+        notify.report_new(JOB, finding_items(findings), sink=sink, state_path=state_path,
+                          prune_before=oldest, window_days=args.window_days)
     return rc
 
 
@@ -194,11 +225,16 @@ def _parse_args(argv: list):
                         "daily job silent unless something NEW broke; permanent "
                         "historical holes are documented, not re-alerted nightly")
     p.add_argument("--report-dir", help="defaults to <parquet-root>/../audit")
+    p.add_argument("--no-notify", action="store_true",
+                   help="do not touch notification state at all. Use for manual / "
+                        "diagnostic runs (e.g. --window-days 0): a different window "
+                        "width would otherwise prune seen items the nightly job still "
+                        "finds, and would consume alerts nobody received")
     return p.parse_args(argv)
 
 
 def _run(args):
-    """Returns (exit_code, findings, oldest_date_in_window)."""
+    """Returns (exit_code, findings, oldest_date_in_window, cities)."""
 
     if not pathlib.Path(args.parquet_root).is_dir():
         raise SystemExit(
@@ -228,10 +264,10 @@ def _run(args):
 
     if not findings:
         print(f"{today}\tOK\tno missing or low-volume partitions")
-        return 0, findings, oldest
+        return 0, findings, oldest, cities
     for item in findings:
         print(f"{today}\tANOMALY\t{json.dumps(item, ensure_ascii=False)}")
-    return 1, findings, oldest
+    return 1, findings, oldest, cities
 
 
 if __name__ == "__main__":

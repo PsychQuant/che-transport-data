@@ -140,12 +140,12 @@ def test_same_date_missing_and_low_volume_are_different_items():
     assert len(set(ap.finding_items(findings))) == 2
 
 
-def test_error_shaped_finding_has_no_date_component():
-    """`scan()` emits {feed, city, error} when a feed dir is empty — a different
-    shape with no per-date detail. It must still get a stable identity."""
-    findings = [{"feed": "vehicle_position", "city": "Taipei",
-                 "error": "no partitions found"}]
-    assert ap.finding_items(findings) == ["vehicle_position/Taipei/error"]
+# NOTE: `test_error_shaped_finding_has_no_date_component` lived here and pinned
+# finding_items() emitting "<feed>/<city>/error". That behaviour is deliberately
+# GONE (issue #7 round 2): the error shape describes a CURRENT condition that
+# recovers and recurs, so alert-once made every episode after the first
+# permanently silent. It now goes through error_conditions() + report(); the new
+# contract is pinned by test_finding_items_no_longer_includes_the_error_shape.
 
 
 def test_multiple_findings_are_flattened_in_stable_order():
@@ -175,6 +175,55 @@ def test_identity_is_independent_of_file_counts(tmp_path):
                 (p / f"{i}.parquet").write_text("")
         return ap.finding_items(ap.scan(str(root), ["Taipei"], "2026-08-05", 0.5, 0))
 
-    night1 = build({"2026-08-01": 100, "2026-08-03": 100})   # 08-02 missing
-    night2 = build({"2026-08-01": 137, "2026-08-03": 94})    # same hole, other counts
-    assert night1 == night2
+    # Counts must actually REACH the low_volume path, or this pins nothing:
+    # 94/137 = 0.686 > min_ratio 0.5 never triggers it (verify round 2 proved
+    # the original version stayed green under a count-folding mutation).
+    night1 = build({"2026-08-01": 100, "2026-08-03": 100, "2026-08-04": 100})
+    night2 = build({"2026-08-01": 137, "2026-08-03": 40, "2026-08-04": 137})
+    assert "arrival_event/Taipei/missing/2026-08-02" in night1
+    assert "arrival_event/Taipei/low_volume/2026-08-03" in night2   # path reached
+    assert set(night1) - {"arrival_event/Taipei/low_volume/2026-08-03"} == \
+           set(night2) - {"arrival_event/Taipei/low_volume/2026-08-03"}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Per-kind dispatch (issue #7 round 2)
+# ══════════════════════════════════════════════════════════════════════════
+# The three finding kinds have three different temporal semantics. Round 1
+# collapsed them into one and shipped a regression: `error` (this feed has no
+# partitions AT ALL) genuinely recovers and genuinely recurs, so alert-once
+# made every episode after the first permanently silent.
+
+def test_finding_items_no_longer_includes_the_error_shape():
+    findings = [{"feed": "f", "city": "c", "error": "no partitions found"}]
+    assert ap.finding_items(findings) == []
+
+
+def test_finding_items_still_covers_the_two_date_kinds():
+    findings = [{"feed": "f", "city": "c", "missing": ["2026-08-01"],
+                 "low_volume": ["2026-08-02"]}]
+    assert ap.finding_items(findings) == [
+        "f/c/missing/2026-08-01", "f/c/low_volume/2026-08-02"]
+
+
+def test_error_conditions_covers_the_full_cross_product():
+    """To ANNOUNCE a recovery you must report ok=True for a combination that
+    previously errored — so every (feed, city) needs a verdict each run, not
+    just the ones currently failing."""
+    findings = [{"feed": "arrival_event", "city": "Taipei", "error": "no partitions found"}]
+    out = dict(((f, c), dark) for f, c, dark in ap.error_conditions(findings, ["Taipei"]))
+    assert len(out) == len(ap.FEEDS)
+    assert out[("arrival_event", "Taipei")] is True
+    assert out[("eta_snapshot", "Taipei")] is False
+
+
+def test_error_conditions_is_per_feed_city_not_aggregated():
+    """Aggregating into one boolean would re-create B5: feed A goes dark and
+    rings; feed B then goes dark and the aggregate is already 'fail', so
+    silence."""
+    findings = [{"feed": "arrival_event", "city": "Taipei", "error": "x"},
+                {"feed": "eta_snapshot", "city": "NewTaipei", "error": "x"}]
+    out = dict(((f, c), d) for f, c, d in ap.error_conditions(findings, ["Taipei", "NewTaipei"]))
+    assert len(out) == len(ap.FEEDS) * 2
+    assert out[("arrival_event", "Taipei")] is True
+    assert out[("arrival_event", "NewTaipei")] is False

@@ -285,3 +285,77 @@ def test_mount_guard_still_uses_the_boolean_report_and_does_recover(tmp_path, de
     assert "FAIL" in delivering.text
     _audit(root, tmp_path, window="0")
     assert "RECOVERED" in delivering.text
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Per-kind dispatch end-to-end (issue #7 round 2)
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_error_recurrence_rings_again(tmp_path, delivering):
+    """THE round-1 regression. `error` means the feed is dark RIGHT NOW — it
+    recovers and it recurs. Alert-once made every episode after the first
+    permanently silent, which is strictly worse than the boolean it replaced."""
+    root = tmp_path / "parquet"
+    root.mkdir()
+    _audit(root, tmp_path, window="0")                       # dark
+    assert len(delivering.sent) >= 1
+    after_first = len(delivering.sent)
+
+    _mk(root, FEEDS_ALL, "Taipei", ["2026-08-01", "2026-08-02"])   # collection back
+    _audit(root, tmp_path, window="0")
+    assert "RECOVERED" in delivering.text
+
+    for feed in FEEDS_ALL:                                   # dark AGAIN
+        import shutil; shutil.rmtree(root / feed)
+    _audit(root, tmp_path, window="0")
+    assert len(delivering.sent) > after_first + 1
+    assert delivering.sent[-1].startswith("[FAIL]")
+
+
+def test_error_is_per_feed_not_aggregated(tmp_path, delivering):
+    """A single aggregate boolean would re-create B5: feed A rings, then feed B
+    goes dark while the aggregate is already 'fail' → silence."""
+    root = tmp_path / "parquet"
+    _mk(root, FEEDS_ALL, "Taipei", ["2026-08-01", "2026-08-02"])
+    _audit(root, tmp_path, window="0")
+    import shutil
+    shutil.rmtree(root / "arrival_event")
+    _audit(root, tmp_path, window="0")
+    n_after_a = len(delivering.sent)
+    shutil.rmtree(root / "eta_snapshot")                     # second feed goes dark
+    _audit(root, tmp_path, window="0")
+    assert len(delivering.sent) > n_after_a
+    assert "eta_snapshot" in delivering.sent[-1]
+
+
+def test_prune_wiring_is_actually_connected(tmp_path, delivering, monkeypatch):
+    """C6. Verify round 2 proved the whole prune_before wiring could be deleted
+    with 90 tests still green — Risk 2's mitigation had ZERO entry-point
+    coverage. Pre-seed a long-expired item and require the entry point to drop
+    it."""
+    import notify as _n
+    state = str(tmp_path / "delivered-state.json")
+    monkeypatch.setattr(_n, "from_env", lambda: (delivering, state))
+    _n.save_state(state, {"bus-eta-audit#seen": ["arrival_event/Taipei/missing/2020-01-01"],
+                          "bus-eta-audit#window": 10, "#schema": 2})
+    root = tmp_path / "parquet"
+    _mk(root, FEEDS_ALL, "Taipei", ["2026-08-01", "2026-08-02"])
+    audit_partitions.main(["--parquet-root", str(root), "--cities", "Taipei",
+                           "--window-days", "10", "--report-dir", str(tmp_path / "audit")])
+    assert "arrival_event/Taipei/missing/2020-01-01" not in \
+        _n.load_state(state)["bus-eta-audit#seen"]
+
+
+def test_no_notify_touches_nothing(tmp_path, capsys, monkeypatch):
+    """DP5 first line of defence: manual / diagnostic runs must not write
+    notification state, consume alerts nobody received, or prune at a width the
+    scheduled job does not use."""
+    state = tmp_path / "should-not-exist.json"
+    monkeypatch.setenv("BUS_ETA_NOTIFY_STATE", str(state))
+    root = tmp_path / "parquet"
+    _mk(root, ("arrival_event",), "Taipei", ["2026-08-01", "2026-08-03"])
+    audit_partitions.main(["--parquet-root", str(root), "--cities", "Taipei",
+                           "--window-days", "0", "--no-notify",
+                           "--report-dir", str(tmp_path / "audit")])
+    assert not state.exists()
+    assert "[notify" not in capsys.readouterr().err
