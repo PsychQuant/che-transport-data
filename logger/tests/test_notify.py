@@ -355,3 +355,132 @@ def test_failing_systemexit_is_not_benign():
 
 def test_ordinary_exception_is_not_benign():
     assert notify.is_benign_exit(RuntimeError("boom")) is False
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# report_new — alert-once-per-item (issue #7, verify round 1 B4/B5)
+# ══════════════════════════════════════════════════════════════════════════
+# audit's outcome is a SET of findings, not a boolean. Projecting it onto
+# ok/fail lost information in both directions: a set that emptied because the
+# --window-days window slid read as "recovered" (but nothing recovers — TDX
+# retains ~2h, holes are permanent), and a set that grew while staying
+# non-empty read as "unchanged" (so a disaster tripling in size stayed silent).
+#
+# In audit's domain there is no such thing as recovery, so the right primitive
+# is not a state machine at all: alert once per distinct finding, then be quiet.
+
+ITEM_A = "arrival_event/Taipei/missing/2026-08-01"
+ITEM_B = "eta_snapshot/Taipei/missing/2026-08-02"
+ITEM_C = "vehicle_position/NewTaipei/low_volume/2026-08-03"
+
+
+def test_first_sighting_of_an_item_alerts(tmp_path):
+    sink = RecordingSink()
+    out = notify.report_new("bus-eta-audit", [ITEM_A],
+                            sink=sink, state_path=str(tmp_path / "s.json"), now=NOW)
+    assert out["status"] == "alerted"
+    assert out["alerted"] == [ITEM_A]
+    assert len(sink.sent) == 1
+
+
+def test_same_item_again_is_silent(tmp_path):
+    sp = str(tmp_path / "s.json")
+    sink = RecordingSink()
+    notify.report_new("bus-eta-audit", [ITEM_A], sink=sink, state_path=sp, now=NOW)
+    out = notify.report_new("bus-eta-audit", [ITEM_A], sink=sink, state_path=sp, now=NOW)
+    assert out["status"] == "silent"
+    assert out["alerted"] == []
+    assert len(sink.sent) == 1          # sink untouched the second time
+
+
+def test_a_new_item_alongside_an_old_one_alerts_only_the_new(tmp_path):
+    """B5's core. A disaster getting worse must ring again."""
+    sp = str(tmp_path / "s.json")
+    sink = RecordingSink()
+    notify.report_new("bus-eta-audit", [ITEM_A], sink=sink, state_path=sp, now=NOW)
+    out = notify.report_new("bus-eta-audit", [ITEM_A, ITEM_B], sink=sink, state_path=sp, now=NOW)
+    assert out["status"] == "alerted"
+    assert out["alerted"] == [ITEM_B]
+    assert ITEM_B in sink.sent[1][1] and ITEM_A not in sink.sent[1][1]
+
+
+def test_items_disappearing_sends_nothing(tmp_path):
+    """B4's core. A hole leaving the audit window is NOT a recovery — nothing
+    in this system recovers. Silence is correct; announcing health is a lie."""
+    sp = str(tmp_path / "s.json")
+    sink = RecordingSink()
+    notify.report_new("bus-eta-audit", [ITEM_A], sink=sink, state_path=sp, now=NOW)
+    out = notify.report_new("bus-eta-audit", [], sink=sink, state_path=sp, now=NOW)
+    assert out["status"] == "silent"
+    assert len(sink.sent) == 1
+    assert "RECOVERED" not in "".join(m for _, m in sink.sent)
+
+
+def test_file_count_churn_does_not_create_a_new_item(tmp_path):
+    """Risk 1. Item identity is feed/city/kind/date — never the file count,
+    which fluctuates daily and would make this ring every night."""
+    sp = str(tmp_path / "s.json")
+    sink = RecordingSink()
+    notify.report_new("bus-eta-audit", [ITEM_A], sink=sink, state_path=sp, now=NOW)
+    out = notify.report_new("bus-eta-audit", [ITEM_A], sink=sink, state_path=sp, now=NOW)
+    assert out["alerted"] == []
+
+
+def test_dry_run_does_not_consume_the_seen_set(tmp_path):
+    sp = str(tmp_path / "s.json")
+    out = notify.report_new("bus-eta-audit", [ITEM_A],
+                            sink=notify.DryRunSink(), state_path=sp, now=NOW)
+    assert out["status"] == "dry-run"
+    sink = RecordingSink()
+    assert notify.report_new("bus-eta-audit", [ITEM_A],
+                             sink=sink, state_path=sp, now=NOW)["status"] == "alerted"
+
+
+def test_failed_delivery_does_not_consume_the_seen_set(tmp_path):
+    sp = str(tmp_path / "s.json")
+    out = notify.report_new("bus-eta-audit", [ITEM_A],
+                            sink=RecordingSink(explode=True), state_path=sp, now=NOW)
+    assert out["status"] == "delivery-failed"
+    sink = RecordingSink()
+    assert notify.report_new("bus-eta-audit", [ITEM_A],
+                             sink=sink, state_path=sp, now=NOW)["status"] == "alerted"
+
+
+def test_report_new_never_raises_on_baseexception_from_sink(tmp_path):
+    out = notify.report_new("bus-eta-audit", [ITEM_A],
+                            sink=ExitingSink(SystemExit(3)),
+                            state_path=str(tmp_path / "s.json"), now=NOW)
+    assert out["status"] == "delivery-failed"
+
+
+def test_prune_before_drops_old_items_without_changing_the_verdict(tmp_path):
+    """Risk 2. The seen-set is bounded by the audit window. Safe because the
+    window only moves forward — a pruned item cannot re-enter findings."""
+    sp = str(tmp_path / "s.json")
+    sink = RecordingSink()
+    notify.report_new("bus-eta-audit", [ITEM_A, ITEM_C], sink=sink, state_path=sp, now=NOW)
+    notify.report_new("bus-eta-audit", [ITEM_C], sink=sink, state_path=sp, now=NOW,
+                      prune_before="2026-08-03")
+    assert notify.load_state(sp)["bus-eta-audit#seen"] == [ITEM_C]   # A pruned
+
+
+def test_legacy_state_without_seen_key_reads_as_empty(tmp_path):
+    """Risk 5. Old state files just lack the key — first run alerts the current
+    window's findings once, then goes quiet."""
+    sp = str(tmp_path / "s.json")
+    notify.save_state(sp, {"bus-eta-audit": "fail"})
+    sink = RecordingSink()
+    out = notify.report_new("bus-eta-audit", [ITEM_A], sink=sink, state_path=sp, now=NOW)
+    assert out["status"] == "alerted"
+    assert notify.load_state(sp)["bus-eta-audit"] == "fail"   # report()'s key untouched
+
+
+def test_report_new_does_not_disturb_report_state(tmp_path):
+    """Family-wide: the two primitives share a file but not a key."""
+    sp = str(tmp_path / "s.json")
+    sink = RecordingSink()
+    notify.report("bus-eta-audit", ok=False, detail="d", sink=sink, state_path=sp, now=NOW)
+    notify.report_new("bus-eta-audit", [ITEM_A], sink=sink, state_path=sp, now=NOW)
+    st = notify.load_state(sp)
+    assert st["bus-eta-audit"] == "fail"
+    assert st["bus-eta-audit#seen"] == [ITEM_A]

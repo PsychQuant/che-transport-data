@@ -247,3 +247,103 @@ def _persist(state_path: str, state: dict, job: str, new: str) -> None:
         save_state(state_path, {**state, job: new})
     except OSError as exc:
         print(f"[notify] could not persist state to {state_path}: {exc}", file=sys.stderr)
+
+
+def compose_items_message(job: str, items, now: datetime.datetime) -> str:
+    """Message body for newly-seen findings. Lists them — a constant string like
+    "partition audit found anomalies" forces the reader back to the log file
+    nobody reads, which is the habit this whole module exists to break.
+    """
+    head = f"[NEW] {job} @ {now.isoformat()} — {len(items)} new finding(s)"
+    return head + "\n" + "\n".join(f"  - {i}" for i in items)
+
+
+def _prune_seen(items, prune_before):
+    """Bound the seen-set by the audit window.
+
+    Safe because the window only moves forward: a pruned item cannot re-enter
+    findings, so pruning can never cause a duplicate alert. Items whose last
+    path segment is not an ISO date (e.g. `<feed>/<city>/error`) are kept.
+    """
+    if not prune_before:
+        return list(items)
+    kept = []
+    for item in items:
+        tail = item.rsplit("/", 1)[-1]
+        try:
+            datetime.date.fromisoformat(tail)
+        except ValueError:
+            kept.append(item)          # no date component — never prune
+            continue
+        if tail >= prune_before:
+            kept.append(item)
+    return kept
+
+
+def _persist_key(state_path: str, state: dict, key: str, value) -> None:
+    """Best-effort write of ONE key. `{**state, key: value}` preserves every
+    other key, so `report()` and `report_new()` can share a file safely."""
+    try:
+        save_state(state_path, {**state, key: value})
+    except OSError as exc:
+        _warn(f"[notify] could not persist state to {state_path}: {exc}")
+
+
+def report_new(job: str, items, *, sink, state_path: str,
+               now: datetime.datetime = None, prune_before=None) -> dict:
+    """Alert once per previously-unseen item, then stay quiet (issue #7).
+
+    For a job whose outcome is a SET of findings rather than a boolean, the
+    ok/fail state machine is the wrong tool — not broken, wrong-shaped. It lost
+    information in both directions:
+
+      - a set that emptied because the audit window slid read as `fail → ok`,
+        producing a `[RECOVERED]` that is semantically always false (TDX retains
+        ~2h; a hole is permanent, nothing recovers)
+      - a set that grew while staying non-empty read as `fail → fail`, so a
+        disaster tripling in size stayed completely silent
+
+    Alerting per distinct item removes both at once: there is no recovery to
+    announce, and a bigger disaster contains new items.
+
+    `report()` is untouched and remains correct for the genuinely-binary callers
+    (warehouse: the run completed or raised; logger: data is flowing or not).
+    Both keep working, and both DO have real recoveries worth announcing.
+
+    Returns {"status": ..., "alerted": [...], "already_seen": [...]} where status
+    is one of "alerted" / "silent" / "dry-run" / "delivery-failed" / "error".
+    Never raises.
+    """
+    try:
+        now = now or datetime.datetime.now(TPE)
+        key = f"{job}#seen"
+        state = load_state(state_path)
+        raw = state.get(key)
+        seen = [str(x) for x in raw] if isinstance(raw, list) else []
+
+        items = list(dict.fromkeys(items))          # dedupe, keep caller order
+        already = set(seen)
+        new = [i for i in items if i not in already]
+        kept = _prune_seen(seen + new, prune_before)
+
+        if not new:
+            if kept != seen:                        # pruning still worth writing
+                _persist_key(state_path, state, key, kept)
+            return {"status": "silent", "alerted": [], "already_seen": items}
+
+        try:
+            sink.send(classify_severity(job), compose_items_message(job, new, now))
+        except BaseException as exc:
+            # Undelivered → do NOT consume the seen-set; retry next run.
+            _warn(f"[notify] delivery failed for {job}: {exc}")
+            return {"status": "delivery-failed", "alerted": [], "already_seen": items}
+
+        if not getattr(sink, "delivers", True):
+            return {"status": "dry-run", "alerted": [], "already_seen": items}
+
+        _persist_key(state_path, state, key, kept)
+        return {"status": "alerted", "alerted": new,
+                "already_seen": [i for i in items if i in already]}
+    except BaseException as exc:                    # last-resort — never propagate
+        _warn(f"[notify] unexpected failure for {job}: {exc}")
+        return {"status": "error", "alerted": [], "already_seen": []}
