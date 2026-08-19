@@ -70,7 +70,14 @@ logger 已部署並運行於 mini-che。部署踩過三道 macOS 關卡，操作
   - **gap 偵測藏掉 5 天資料**（#4）：heartbeat 記的是「迴圈還活著」不是「資料寫進去了」（碟掛著而 cycle 全失敗時心跳照跳），且 gap 偵測**只在啟動時跑一次**。2026-06-10 修掉 crash-loop 的那個（正確的）修法，同時拿掉了偵測器唯一的觸發路徑。實測真實停擺 ≈211h/65 天（13.5%），而 `gaps.jsonl` 只記到 37.4h——**`coverage_metrics()` 目前系統性低估缺口，用它下結論前先跑稽核**。修法：`audit_partitions.py`（獨立每日 job，偵測器不可與被偵測對象同 process）+ `classify_write_drought()`（迴圈內偵測、逐步升級、uptime 地板防 crash-loop）。
 - **不可回補**：TDX 公車動態只滾動保留 ~2h。缺的就是永久缺的，所以偵測延遲直接等於資料損失——這是 log-only 監控在這個系統裡特別貴的原因。
 - **重啟 agent**（plist 未變時）：`ssh mini-che 'launchctl kickstart -k gui/$(id -u)/tw.psychquant.bus-eta-logger'`
-- **稽核資料完整性**：`ssh mini-che '~/che-transport-data/logger/.venv/bin/python ~/che-transport-data/logger/audit_partitions.py --parquet-root /Volumes/mini-2TB-SSD/che-transport/bus-eta/parquet --window-days 0'`（`--window-days 0` = 全歷史；每日 job 預設只看近 14 天以免歷史缺口天天重報而失去注意力）
+- **稽核資料完整性**：`ssh mini-che '~/che-transport-data/logger/.venv/bin/python ~/che-transport-data/logger/audit_partitions.py --parquet-root /Volumes/mini-2TB-SSD/che-transport/bus-eta/parquet --window-days 0 --no-notify'`（`--window-days 0` = 全歷史；每日 job 預設只看近 14 天以免歷史缺口天天重報而失去注意力）
+  - **`--no-notify` 不是可選的**（#7）：手動執行與排程 job 共用同一個通知 state 檔。不帶此旗標時，不同的 `--window-days` 寬度會 prune 掉排程 job 仍會找到的 item，並把「已告警」的狀態消耗掉——於是當晚真正的告警被靜音。程式另有寬度守衛作為第二道，但別依賴它。
+- **通知 state 檔語意**（`~/.bus-eta-logger/notify-state.json`，#5/#7）：
+  - `<job>`：job 層布林（跑了沒／碟在不在）。**有**真正的 recovery
+  - `<job>:<feed>/<city>`：該 feed 是否「現在沒在收」。**會復原也會復發**，故用布林而非 alert-once
+  - `<job>#seen`：已告警過的 date 類 finding（`missing` / `low_volume`）。這些是關於過去某天的永久事實，不會復原
+  - `<job>#window` / `#schema`：prune 的寬度守衛與 schema 版本
+  - **audit 的「OK」不等於健康**：`low_volume` 判準是視窗相對中位數，全面性劣化時偵測不到（#8）。要確認真實狀況請跑上面的全歷史指令
 - **看狀態**：`ssh mini-che 'launchctl list | grep bus-eta; tail ~/Library/Logs/bus-eta-logger.err.log'`
 - **查資料量**：`ssh mini-che 'find /Volumes/mini-2TB-SSD/che-transport/bus-eta/parquet -name "*.parquet" | wc -l'`
 
