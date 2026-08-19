@@ -117,15 +117,26 @@ def scan(parquet_root: str, cities, today: str, min_ratio: float,
 def main(argv: list) -> int:
     """Run the audit and report the outcome (issue #5).
 
-    Catches BaseException, not Exception: the mount guard below signals an
-    absent NVMe with `raise SystemExit`, which does NOT inherit from Exception.
-    `except Exception` here would silently drop the single most important alert
-    this job can produce.
+    Two rules earned in verify round 1:
+
+    - **Arguments are parsed OUTSIDE the guard.** `argparse` signals `--help`
+      (exit 0) and usage errors via `SystemExit`, and an operator investigating
+      an incident runs `--help` on exactly this script. Recording that as FAIL
+      poisoned the shared state, so the real "the disk is gone" alert that night
+      was suppressed as fail→fail — the silence this module exists to remove.
+      Parsing first makes that structurally impossible, not merely guarded (B1).
+    - **`except BaseException`, and `is_benign_exit` inside it.** The mount guard
+      signals an absent NVMe with `raise SystemExit`, which is not an
+      `Exception`; a clean exit or Ctrl-C reaching here is still not a job
+      outcome, so it is re-raised untouched.
     """
+    args = _parse_args(argv)          # argparse SystemExit never reaches the guard
     sink, state_path = notify.from_env()
     try:
-        rc = _run(argv)
+        rc = _run(args)
     except BaseException as exc:
+        if notify.is_benign_exit(exc):
+            raise                      # clean exit / Ctrl-C: not a job outcome
         notify.report(JOB, ok=False, detail=notify.summarize(exc),
                       sink=sink, state_path=state_path)
         raise
@@ -136,7 +147,7 @@ def main(argv: list) -> int:
     return rc
 
 
-def _run(argv: list) -> int:
+def _parse_args(argv: list):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--parquet-root", required=True)
     p.add_argument("--cities", default="Taipei,NewTaipei")
@@ -147,7 +158,10 @@ def _run(argv: list) -> int:
                         "daily job silent unless something NEW broke; permanent "
                         "historical holes are documented, not re-alerted nightly")
     p.add_argument("--report-dir", help="defaults to <parquet-root>/../audit")
-    args = p.parse_args(argv)
+    return p.parse_args(argv)
+
+
+def _run(args) -> int:
 
     if not pathlib.Path(args.parquet_root).is_dir():
         raise SystemExit(

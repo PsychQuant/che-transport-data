@@ -259,3 +259,99 @@ def test_redact_replaces_every_occurrence():
 
 def test_redact_is_a_noop_without_a_secret():
     assert notify.redact("plain message", None) == "plain message"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Verify round 1 fixes (2026-08-13 ensemble, 5 blocking findings)
+# ══════════════════════════════════════════════════════════════════════════
+
+class ExitingSink:
+    """A sink that raises a BaseException (not an Exception)."""
+
+    def __init__(self, exc):
+        self.exc = exc
+
+    def send(self, severity, message):
+        raise self.exc
+
+
+# ── B3: report() must not raise, INCLUDING BaseException ──────────────────
+def test_report_survives_systemexit_from_sink(tmp_path):
+    """B3. The whole argument of this change is that SystemExit inherits from
+    BaseException, not Exception — and `report()` guarded only `Exception`.
+    A BaseException from the sink escaped, replacing the caller's original
+    SystemExit and destroying the exit code D4 exists to preserve.
+    """
+    action = notify.report("bus-eta-audit", ok=False, detail="d",
+                           sink=ExitingSink(SystemExit(3)),
+                           state_path=str(tmp_path / "s.json"), now=NOW)
+    assert action == "delivery-failed"
+
+
+def test_report_survives_keyboardinterrupt_from_sink(tmp_path):
+    action = notify.report("bus-eta-audit", ok=False, detail="d",
+                           sink=ExitingSink(KeyboardInterrupt()),
+                           state_path=str(tmp_path / "s.json"), now=NOW)
+    assert action == "delivery-failed"
+
+
+def test_failed_delivery_does_not_consume_the_state_transition(tmp_path):
+    """An undelivered alert must be retried next run, not swallowed forever."""
+    sp = str(tmp_path / "s.json")
+    notify.report("bus-eta-audit", ok=False, detail="d",
+                  sink=ExitingSink(SystemExit(3)), state_path=sp, now=NOW)
+    sink = RecordingSink()
+    assert notify.report("bus-eta-audit", ok=False, detail="d",
+                         sink=sink, state_path=sp, now=NOW) == "notified"
+
+
+# ── B2: dry-run must NOT consume the state transition ─────────────────────
+def test_dry_run_does_not_consume_the_state_transition(tmp_path):
+    """B2. By design (D5) this module ships in dry-run until the alerting group
+    exists. If a dry-run 'send' counts as delivered, every failure during that
+    window is marked notified while only reaching the log nobody reads — and
+    once Telegram is wired, an ongoing failure is suppressed forever.
+    """
+    sp = str(tmp_path / "s.json")
+    action = notify.report("bus-eta-audit", ok=False, detail="d",
+                           sink=notify.DryRunSink(), state_path=sp, now=NOW)
+    assert action == "dry-run"
+    assert notify.load_state(sp) == {}          # nothing persisted
+
+
+def test_wiring_telegram_after_a_dry_run_period_still_alerts(tmp_path):
+    """The exact deployment sequence: dry-run for N nights, then credentials
+    land while the job is still failing. It MUST ring."""
+    sp = str(tmp_path / "s.json")
+    for _ in range(5):
+        notify.report("bus-eta-warehouse", ok=False, detail="d",
+                      sink=notify.DryRunSink(), state_path=sp, now=NOW)
+    sink = RecordingSink()
+    assert notify.report("bus-eta-warehouse", ok=False, detail="d",
+                         sink=sink, state_path=sp, now=NOW) == "notified"
+    assert len(sink.sent) == 1
+
+
+def test_real_sink_still_consumes_the_transition():
+    """Guard against over-correcting: a delivering sink must still suppress."""
+    assert notify.DryRunSink().delivers is False
+    assert notify.TelegramSink("t", "c").delivers is True
+
+
+# ── B1: argparse / clean exits are not job outcomes ───────────────────────
+def test_clean_systemexit_is_benign():
+    assert notify.is_benign_exit(SystemExit(0)) is True
+    assert notify.is_benign_exit(SystemExit(None)) is True
+
+
+def test_keyboardinterrupt_is_benign():
+    assert notify.is_benign_exit(KeyboardInterrupt()) is True
+
+
+def test_failing_systemexit_is_not_benign():
+    assert notify.is_benign_exit(SystemExit(1)) is False
+    assert notify.is_benign_exit(SystemExit("volume not mounted")) is False
+
+
+def test_ordinary_exception_is_not_benign():
+    assert notify.is_benign_exit(RuntimeError("boom")) is False

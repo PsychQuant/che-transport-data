@@ -174,15 +174,26 @@ def run_sql(con: duckdb.DuckDBPyConnection, sql: str) -> None:
 def main(argv: list[str]) -> int:
     """Run the requested workload and report the outcome (issue #5).
 
-    Catches BaseException, not Exception: `ensure_parquet_root` signals an
-    absent NVMe with `raise SystemExit`, which does NOT inherit from Exception.
-    `except Exception` here would silently drop exactly the alert that would
-    have caught #3 forty-one days earlier.
+    Two rules earned in verify round 1:
+
+    - **Arguments are parsed OUTSIDE the guard.** `argparse` signals `--help`
+      (exit 0) and usage errors via `SystemExit`, and an operator investigating
+      an incident runs `--help` on exactly this script. Recording that as FAIL
+      poisoned the shared state, so the real "the disk is gone" alert that night
+      was suppressed as fail→fail — the silence this module exists to remove.
+      Parsing first makes that structurally impossible, not merely guarded (B1).
+    - **`except BaseException`, and `is_benign_exit` inside it.** The mount guard
+      signals an absent NVMe with `raise SystemExit`, which is not an
+      `Exception`; a clean exit or Ctrl-C reaching here is still not a job
+      outcome, so it is re-raised untouched.
     """
+    args = _parse_args(argv)          # argparse SystemExit never reaches the guard
     sink, state_path = notify.from_env()
     try:
-        rc = _run(argv)
+        rc = _run(args)
     except BaseException as exc:
+        if notify.is_benign_exit(exc):
+            raise                      # clean exit / Ctrl-C: not a job outcome
         notify.report(JOB, ok=False, detail=notify.summarize(exc),
                       sink=sink, state_path=state_path)
         raise
@@ -191,7 +202,7 @@ def main(argv: list[str]) -> int:
     return rc
 
 
-def _run(argv: list[str]) -> int:
+def _parse_args(argv: list[str]):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=["bootstrap", "incremental", "verify", "scd2", "compat"], required=True)
     parser.add_argument("--db", required=True, help="DuckDB database path")
@@ -209,7 +220,10 @@ def _run(argv: list[str]) -> int:
     parser.add_argument("--scd-valid-from", help="TIMESTAMPTZ literal value for SCD2 changes")
     parser.add_argument("--tmp-dir", default=tempfile.gettempdir())
     parser.add_argument("--print-sql", action="store_true")
-    args = parser.parse_args(argv)
+    return parser.parse_args(argv)
+
+
+def _run(args) -> int:
 
     args.load_date = resolve_load_date(args.load_date, args.load_yesterday)
     ensure_parquet_root(args.parquet_root)

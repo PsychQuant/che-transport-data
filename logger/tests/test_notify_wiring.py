@@ -94,3 +94,58 @@ def test_warehouse_mount_guard_still_exits_nonzero(tmp_path):
         run_warehouse_sql.main(["--mode", "incremental", "--db", str(tmp_path / "x.duckdb"),
                                 "--parquet-root", missing, "--load-yesterday"])
     assert exc.value.code != 0
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# B1 — argparse's SystemExit is not a job outcome (verify round 1)
+# ══════════════════════════════════════════════════════════════════════════
+import notify  # noqa: E402
+
+
+def _state(monkeypatch_path):
+    return notify.load_state(os.environ["BUS_ETA_NOTIFY_STATE"])
+
+
+def test_audit_help_is_not_recorded_as_failure(capsys):
+    """`--help` exits via SystemExit(0). Recording it as FAIL poisons the shared
+    state, so the next real 'the disk is gone' alert is suppressed as fail->fail.
+    Reproduced by three lenses independently during verify."""
+    with pytest.raises(SystemExit) as exc:
+        audit_partitions.main(["--help"])
+    assert exc.value.code == 0
+    assert "bus-eta-audit" not in capsys.readouterr().err
+    assert _state(None) == {}
+
+
+def test_warehouse_help_is_not_recorded_as_failure(capsys):
+    with pytest.raises(SystemExit) as exc:
+        run_warehouse_sql.main(["--help"])
+    assert exc.value.code == 0
+    assert "bus-eta-warehouse" not in capsys.readouterr().err
+    assert _state(None) == {}
+
+
+def test_audit_bad_argument_is_not_recorded_as_failure(capsys):
+    """argparse usage errors exit 2 — also not a job outcome."""
+    with pytest.raises(SystemExit):
+        audit_partitions.main(["--definitely-not-a-flag"])
+    assert _state(None) == {}
+
+
+def test_help_does_not_mask_a_later_real_failure(tmp_path, capsys):
+    """The end-to-end regression the reviewers demonstrated: an operator runs
+    --help while investigating, then that night the NVMe really is gone."""
+    with pytest.raises(SystemExit):
+        audit_partitions.main(["--help"])
+    capsys.readouterr()
+    with pytest.raises(SystemExit):
+        audit_partitions.main(["--parquet-root", str(tmp_path / "gone") + "/parquet"])
+    err = capsys.readouterr().err
+    assert "bus-eta-audit" in err and "FAIL" in err
+
+
+def test_mount_guard_failure_still_preserves_exit_code(tmp_path):
+    with pytest.raises(SystemExit) as exc:
+        run_warehouse_sql.main(["--mode", "incremental", "--db", str(tmp_path / "x.duckdb"),
+                                "--parquet-root", str(tmp_path / "gone"), "--load-yesterday"])
+    assert exc.value.code != 0

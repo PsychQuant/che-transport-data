@@ -82,7 +82,16 @@ def compose_message(job: str, ok: bool, detail: str, now: datetime.datetime) -> 
 
 class DryRunSink:
     """Prints instead of delivering. The default when credentials are absent —
-    notifications are irreversible, so the safe mode is the fallback mode."""
+    notifications are irreversible, so the safe mode is the fallback mode.
+
+    `delivers = False` is load-bearing: by design (D5) this module ships in
+    dry-run until the alerting group exists. If a dry-run "send" counted as
+    delivered, every failure in that window would be marked notified while only
+    reaching the log nobody reads — and once Telegram is wired, an ongoing
+    failure would be suppressed forever as fail→fail. Verify round 1, B2.
+    """
+
+    delivers = False
 
     def send(self, severity: str, message: str) -> None:
         print(f"[notify dry-run/{severity}] {message}", file=sys.stderr)
@@ -108,6 +117,8 @@ class TelegramSink:
     letting that exception through verbatim would turn a single 401 into a
     permanent credential leak. Every error out of this class is redacted first.
     """
+
+    delivers = True
 
     def __init__(self, token: str, chat_id: str, *, transport=None):
         self.token = token
@@ -157,6 +168,22 @@ def from_env():
     return sink, state_path
 
 
+def is_benign_exit(exc: BaseException) -> bool:
+    """True when `exc` ends the process without being a job failure.
+
+    `argparse` signals both `--help` (exit 0) and usage errors via SystemExit,
+    and an operator investigating an incident runs `--help` on exactly these
+    scripts. Recording that as FAIL poisons the shared state file, so the real
+    "the disk is gone" alert that night is suppressed as fail→fail — recreating
+    the silence this module exists to remove. Verify round 1, B1.
+    """
+    if isinstance(exc, KeyboardInterrupt):
+        return True
+    if isinstance(exc, SystemExit):
+        return exc.code in (0, None)
+    return False
+
+
 def summarize(exc: BaseException, limit: int = 300) -> str:
     """One-line-ish rendering of an exception for the alert body."""
     text = f"{type(exc).__name__}: {exc}".strip()
@@ -167,10 +194,14 @@ def report(job: str, ok: bool, detail: str = "", *, sink,
            state_path: str, now: datetime.datetime = None) -> str:
     """Report a job outcome. Returns what actually happened.
 
-    One of: "notified" / "suppressed" / "first-run-ok" / "delivery-failed".
+    One of: "notified" / "suppressed" / "first-run-ok" / "dry-run" /
+    "delivery-failed" / "error".
 
-    Never raises. A notifier that can break its subject is worse than no
-    notifier at all.
+    Never raises — and "never" means `BaseException`, not `Exception`. This
+    module's whole argument is that `SystemExit` is not an `Exception`; guarding
+    only `Exception` here let a BaseException from the sink escape and replace
+    the caller's original SystemExit, destroying the exit code D4 exists to
+    preserve. Verify round 1, B3.
     """
     try:
         now = now or datetime.datetime.now(TPE)
@@ -184,17 +215,30 @@ def report(job: str, ok: bool, detail: str = "", *, sink,
 
         try:
             sink.send(classify_severity(job), compose_message(job, ok, detail, now))
-        except Exception as exc:
+        except BaseException as exc:
             # Do NOT record the new state — an undelivered alert must be retried
             # next run rather than silently swallowed forever.
-            print(f"[notify] delivery failed for {job}: {exc}", file=sys.stderr)
+            _warn(f"[notify] delivery failed for {job}: {exc}")
             return "delivery-failed"
+
+        if not getattr(sink, "delivers", True):
+            # Printed, not delivered. The transition stays unconsumed so it can
+            # still ring once a real sink is configured (B2).
+            return "dry-run"
 
         _persist(state_path, state, job, new)
         return "notified"
-    except Exception as exc:  # last-resort guard — never propagate to the caller
-        print(f"[notify] unexpected failure for {job}: {exc}", file=sys.stderr)
+    except BaseException as exc:  # last-resort guard — never propagate
+        _warn(f"[notify] unexpected failure for {job}: {exc}")
         return "error"
+
+
+def _warn(message: str) -> None:
+    """stderr write that cannot itself raise (closed stream, full disk)."""
+    try:
+        print(message, file=sys.stderr)
+    except BaseException:
+        pass
 
 
 def _persist(state_path: str, state: dict, job: str, new: str) -> None:
